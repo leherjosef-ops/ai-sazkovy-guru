@@ -96,6 +96,11 @@ export default function LoginPage() {
           </button>
         </div>
 
+        <p className="text-[11px] text-gray-500 text-center -mt-2">
+          <T>{`Přihlášením přes Google potvrzuješ, že je ti 18 let, a souhlasíš s`}</T>{' '}
+          <Link href="/terms" className="underline"><T>{`podmínkami`}</T></Link>.
+        </p>
+
         <div className="flex items-center my-4">
           <div className="flex-grow border-t border-gray-800/80"></div>
           <span className="px-3 text-gray-500 text-[10px] font-semibold"><T>{`nebo e-mailem`}</T></span>

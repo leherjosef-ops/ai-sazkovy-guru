@@ -346,5 +346,6 @@ export const EN: Record<string, string> = {
  "Dostupné zápasy s kurzem 1.90+": "Available matches with odds 1.90+",
  "🔥 Kurz 1.9+": "🔥 Odds 1.9+",
  "Tipy": "Tips",
- "Odhad": "Estimate"
+ "Odhad": "Estimate",
+ "Přihlášením přes Google potvrzuješ, že je ti 18 let, a souhlasíš s": "By signing in with Google you confirm that you are 18 or older and agree to the"
 };
