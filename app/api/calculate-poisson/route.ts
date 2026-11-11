@@ -1,100 +1,231 @@
 import { NextResponse } from 'next/server';
+import {
+  buildLeagueModel,
+  predictMatch,
+  fairOdds,
+  pct,
+  toFinishedMatches,
+  activeModelOptions,
+} from '@/lib/poisson';
+import { adminClient } from '@/lib/server-auth';
+import { getLeagueEvents, getBttsYes, findEvent, oddsConfig, getQuota, type MarketPrice } from '@/lib/odds';
 
-export async function GET() {
+const TARGET_COMPETITIONS = ['PL', 'PD', 'SA', 'BL1', 'FL1', 'CL', 'DED', 'PPL', 'BSA', 'ELC'];
+const SURE_BET_THRESHOLD = 0.65;
+
+async function fetchCompetition(code: string, apiKey: string): Promise<any[]> {
   try {
-    const response = await fetch('https://api.football-data.org/v4/matches', {
-      headers: {
-        'X-Auth-Token': process.env.FOOTBALL_DATA_API_KEY || '',
-      },
-      cache: 'no-store'
+    const res = await fetch(`https://api.football-data.org/v4/competitions/${code}/matches`, {
+      headers: { 'X-Auth-Token': apiKey },
+      next: { revalidate: 3600 },
     });
+    if (!res.ok) {
+      console.error(`football-data ${code}: HTTP ${res.status}`);
+      return [];
+    }
+    const data = await res.json();
+    return data.matches || [];
+  } catch (err) {
+    console.error(`Chyba při stahování ligy ${code}:`, err);
+    return [];
+  }
+}
 
-    if (!response.ok) {
-      console.warn(`Externí API vrátil status ${response.status}`);
+const GAP_WARNING = 0.1; // model a trh se liší o víc než 10 p. b. → nedůvěřovat
+
+const fmtEdge = (e: number) => `${e > 0 ? '+' : ''}${(e * 100).toFixed(1)}%`;
+
+function makeTip(name: string, modelProb: number, market?: MarketPrice | null) {
+  if (!market) {
+    // Bez kurzu sázkovky: férový kurz modelu, value nelze spočítat
+    return {
+      name,
+      probability: pct(modelProb),
+      bookmakerOdds: fairOdds(modelProb),
+      oddsSource: 'model' as const,
+      value: null as string | null,
+      isSureBet: modelProb >= SURE_BET_THRESHOLD,
+      gapWarning: false,
+      valueSuspicious: false,
+    };
+  }
+  // Model je jednoduchý, trh zná víc → pro value i „jistotu" použijeme průměr obou
+  const blended = (modelProb + market.prob) / 2;
+  const gapWarning = Math.abs(modelProb - market.prob) > GAP_WARNING;
+  const edge = blended * market.best - 1;
+  // Neobvykle vysoké value nebo kurz jedné sázkovky výrazně nad ostatními bývá zastaralý kurz nebo chyba, ne příležitost
+  const outlier = market.all.length >= 3 && market.best > market.all[1].price * 1.12;
+  const valueSuspicious = edge >= 0.1 || outlier;
+  return {
+    name,
+    probability: pct(modelProb),
+    marketProbability: pct(market.prob),
+    bookmakerOdds: market.best,
+    bookmaker: market.bestBook,
+    oddsList: market.all,
+    oddsSource: 'bookmaker' as const,
+    value: fmtEdge(edge),
+    isSureBet: blended >= SURE_BET_THRESHOLD && !gapWarning,
+    gapWarning,
+    valueSuspicious,
+  };
+}
+
+function buildTips(
+  home: string,
+  p: ReturnType<typeof predictMatch>,
+  m: { home?: MarketPrice; over25?: MarketPrice; btts?: MarketPrice | null }
+) {
+  return [
+    makeTip(`Výhra ${home}`, p.homeWin, m.home),
+    makeTip('Celkem gólů: Více než 2.5 gólů', p.over25, m.over25),
+    makeTip('Oba týmy dají gól (ANO)', p.btts, m.btts),
+  ];
+}
+
+async function compute() {
+  try {
+    const apiKey = process.env.FOOTBALL_DATA_API_KEY;
+
+    if (!apiKey) {
       return NextResponse.json({
-        success: false,
-        message: 'API je přetížené (limit požadavků), zkuste to prosím za chvíli.',
-        data: []
+        success: true,
+        data: [],
+        note: 'Chybí FOOTBALL_DATA_API_KEY – bez dat o zápasech nelze model spočítat.',
       });
     }
 
-    const json = await response.json();
-    const matches = json.matches || [];
+    const perCompetition = await Promise.all(
+      TARGET_COMPETITIONS.map(async (code) => ({
+        code,
+        matches: await fetchCompetition(code, apiKey),
+      }))
+    );
 
-    const processedMatches = matches.map((match: any) => {
-      const homeTeam = match.homeTeam?.name || 'Domácí';
-      const awayTeam = match.awayTeam?.name || 'Hosté';
-      const seed = (match.id % 10);
+    const now = Date.now();
+    const futureLimit = now + 14 * 24 * 60 * 60 * 1000;
+    const cfg = oddsConfig();
+    const bttsLimit = now + cfg.bttsDays * 24 * 60 * 60 * 1000;
+    const processed: any[] = [];
+    const bttsJobs: Promise<void>[] = [];
 
-      // Výpočty pro různé statistické sázky
-      const homeWinProb = 35 + (seed * 5); // např. 35% až 80%
-      const cornersCount = 8.5 + (seed % 4); // např. 8.5 až 11.5 rohů
-      const bttsProb = 50 + (seed * 3); // pravděpodobnost obou týmů skórovat
+    // Kurzy sázkovek (volitelné – bez ODDS_API_KEY aplikace ukáže kurzy modelu)
+    const oddsByComp = new Map<string, Awaited<ReturnType<typeof getLeagueEvents>>>();
+    await Promise.all(
+      perCompetition.map(async ({ code }) => {
+        oddsByComp.set(code, await getLeagueEvents(code));
+      })
+    );
 
-      const toOdds = (prob: number) => Math.max(1.15, (0.92 / (prob / 100))).toFixed(2);
+    for (const { code, matches } of perCompetition) {
+      if (matches.length === 0) continue;
 
-      const matchDateObj = new Date(match.utcDate);
-      const dateLabel = `${matchDateObj.toLocaleDateString('cs-CZ', { day: 'numeric', month: 'numeric' })}, ${matchDateObj.toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' })}`;
+      // Model se učí z odehraných zápasů téže soutěže
+      const model = buildLeagueModel(toFinishedMatches(matches), activeModelOptions());
+      const oddsEvents = oddsByComp.get(code) || [];
 
-      let status = 'NS';
-      if (match.status === 'IN_PLAY' || match.status === 'PAUSED') status = 'LIVE';
-      if (match.status === 'FINISHED') status = 'FT';
+      for (const match of matches) {
+        if (!match.utcDate) continue;
+        if (match.status !== 'SCHEDULED' && match.status !== 'TIMED') continue;
+        if (!match.homeTeam?.id || !match.awayTeam?.id) continue; // ještě neurčené týmy (play-off apod.)
 
-      const homeGoals = match.score?.fullTime?.home;
-      const awayGoals = match.score?.fullTime?.away;
-      const scoreStr = (homeGoals !== null && homeGoals !== undefined && awayGoals !== null && awayGoals !== undefined)
-        ? `${homeGoals} : ${awayGoals}`
-        : null;
+        const t = new Date(match.utcDate).getTime();
+        if (t < now || t > futureLimit) continue;
 
-      // 1. Tip na výsledek / hlavní sázku
-      const mainTip = {
-        name: `Výhra ${homeTeam}`,
-        probability: `${homeWinProb}%`,
-        bookmakerOdds: parseFloat(toOdds(homeWinProb)),
-        isSureBet: homeWinProb >= 78
-      };
+        const home = match.homeTeam.name || 'Domácí';
+        const away = match.awayTeam.name || 'Hosté';
+        const prediction = predictMatch(model, match.homeTeam.id, match.awayTeam.id);
+        const ev = findEvent(oddsEvents, home, away, match.utcDate);
 
-      // 2. Statistická sázka: Rohové kopy (např. Více než 9.5 rohů)
-      const cornersProb = 65 + (seed * 2);
-      const cornersTip = {
-        name: `Celkem rohů: Více než 9.5`,
-        probability: `${cornersProb}%`,
-        bookmakerOdds: parseFloat((1.70 + (seed * 0.04)).toFixed(2)),
-        isSureBet: cornersProb >= 80
-      };
+        const markets: { home?: MarketPrice; over25?: MarketPrice; btts?: MarketPrice | null } = {
+          home: ev?.home1x2,
+          over25: ev?.over25,
+          btts: null,
+        };
 
-      // 3. Statistická sázka: Oba týmy skórují (BTTS)
-      const bttsTip = {
-        name: `Oba týmy dají gól (ANO)`,
-        probability: `${bttsProb}%`,
-        bookmakerOdds: parseFloat(toOdds(bttsProb)),
-        isSureBet: bttsProb >= 75
-      };
+        const row: any = {
+          id: match.id,
+          home_team: home,
+          away_team: away,
+          league: match.competition?.name || 'Fotbalová liga',
+          match_date: new Date(match.utcDate).toLocaleString('cs-CZ', {
+            day: 'numeric',
+            month: 'numeric',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            timeZone: 'Europe/Prague',
+          }),
+          utcDate: match.utcDate,
+          status: 'NS',
+          score: null,
+          expectedGoals: {
+            home: Math.round(prediction.lambdaHome * 100) / 100,
+            away: Math.round(prediction.lambdaAway * 100) / 100,
+          },
+          modelSample: model.sampleSize,
+          tips: buildTips(home, prediction, markets),
+        };
+        processed.push(row);
 
-      return {
-        id: match.id.toString(),
-        home_team: homeTeam,
-        away_team: awayTeam,
-        league: match.competition?.name || 'Fotbalová Liga',
-        match_date: dateLabel,
-        utcDate: match.utcDate,
-        status: status,
-        score: scoreStr,
-        tips: [mainTip, cornersTip, bttsTip] // Obsahuje klasiku, rohy i BTTS
-      };
-    });
+        // „Oba týmy dají gól" se stahuje po zápasech (1 kredit/zápas) → jen nejbližší dny
+        if (ev && cfg.bttsDays > 0 && t <= bttsLimit) {
+          bttsJobs.push(
+            getBttsYes(ev.sportKey, ev.id).then((btts) => {
+              markets.btts = btts;
+              row.tips = buildTips(home, prediction, markets);
+            })
+          );
+        }
+      }
+    }
+    await Promise.all(bttsJobs);
+
+    processed.sort((a, b) => new Date(a.utcDate).getTime() - new Date(b.utcDate).getTime());
 
     return NextResponse.json({
       success: true,
-      data: processedMatches
+      data: processed,
+      oddsEnabled: Boolean(cfg.key),
+      oddsQuota: getQuota(),
     });
-
-  } catch (error: any) {
-    console.error('Chyba serveru:', error.message);
-    return NextResponse.json({
-      success: false,
-      message: 'Chyba připojení k serveru.',
-      data: []
-    }, { status: 500 });
+  } catch (err: any) {
+    console.error('Chyba v calculate-poisson:', err);
+    return NextResponse.json({ success: false, data: [] }, { status: 500 });
   }
+}
+
+// ---------- cache v databázi ----------
+// Spočítané tipy (včetně stažených kurzů) se na TIPS_CACHE_MINUTES ukládají do tabulky tips_cache.
+// Díky tomu každé otevření stránky nevolá football-data.org ani The Odds API. Když tabulka neexistuje
+// nebo je databáze nedostupná, route funguje dál bez cache.
+const CACHE_KEY = 'tips:v2';
+
+export async function GET() {
+  const minutes = Math.max(0, Number(process.env.TIPS_CACHE_MINUTES ?? 60));
+  const canCache = minutes > 0 && Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY);
+
+  if (canCache) {
+    try {
+      const { data } = await adminClient().from('tips_cache').select('payload, updated_at').eq('key', CACHE_KEY).maybeSingle();
+      if (data && Date.now() - new Date(data.updated_at).getTime() < minutes * 60000) {
+        // zápasy, které už začaly, z nabídky vyřadíme
+        const now = Date.now();
+        const payload: any = data.payload;
+        payload.data = (payload.data || []).filter((m: any) => !m.utcDate || new Date(m.utcDate).getTime() > now);
+        return NextResponse.json({ ...payload, cached: true, cachedAt: data.updated_at });
+      }
+    } catch {}
+  }
+
+  const res = await compute();
+  if (canCache && res.ok) {
+    try {
+      const payload = await res.clone().json();
+      if (payload?.success && Array.isArray(payload.data) && payload.data.length > 0) {
+        await adminClient().from('tips_cache').upsert({ key: CACHE_KEY, payload, updated_at: new Date().toISOString() });
+      }
+    } catch {}
+  }
+  return res;
 }

@@ -19,10 +19,10 @@ export default function Navbar({ user, onLogout }: { user?: any; onLogout?: () =
             </div>
           </div>
           <div className="text-center">
-            <h1 className="font-black text-transparent bg-clip-text bg-gradient-to-r from-white via-emerald-300 to-teal-400 text-2xl tracking-wider uppercase font-mono">
-              AI Sázkový Guru
+            <h1 className="font-black text-transparent bg-clip-text bg-gradient-to-r from-white via-emerald-300 to-teal-400 text-2xl font-mono">
+              Statistické tipy
             </h1>
-            <p className="text-[10px] text-gray-400 tracking-widest uppercase font-semibold">Smart Predictive Engine</p>
+            <p className="text-[10px] text-gray-400 font-semibold">Smart Predictive Engine</p>
           </div>
         </Link>
 
@@ -58,7 +58,7 @@ export default function Navbar({ user, onLogout }: { user?: any; onLogout?: () =
                 : 'text-gray-400 hover:text-white hover:bg-gray-900/80'
             }`}
           >
-            <span className="text-sm">⚡</span> AI Generátor
+            <span className="text-sm">⚡</span> Generátor
           </Link>
 
           <Link 

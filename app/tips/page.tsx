@@ -2,34 +2,68 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import AppHeader from '@/components/AppHeader';
+import MatchAnalysis, { ValueExplainer } from '@/components/MatchAnalysis';
+import StakeDialog from '@/components/StakeDialog';
 import { createClient } from '@supabase/supabase-js';
+import { toast } from '@/components/Toaster';
+import { T, tr, trTip, loc } from '@/lib/i18n';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-export default function Home() {
-  const [activeSport, setActiveSport] = useState<'football' | 'lol'>('football');
+export default function TipsPage() {
+  const activeSport = 'football' as const;
   
   const [footballMatches, setFootballMatches] = useState<any[]>([]);
-  const [lolMatches, setLolMatches] = useState<any[]>([]);
   
   const [loadingFootball, setLoadingFootball] = useState<boolean>(true);
-  const [loadingLol, setLoadingLol] = useState<boolean>(false);
-  const [lolLoaded, setLolLoaded] = useState<boolean>(false);
 
   const [user, setUser] = useState<any>(null);
+  const [isVip, setIsVip] = useState<boolean>(false);
+
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedLeague, setSelectedLeague] = useState<string>('Všechny');
-  const [dayFilter, setDayFilter] = useState<'all' | 'today' | 'tomorrow'>('all');
+  const [dayFilter, setDayFilter] = useState<string>('all');
+  
   const [savingKey, setSavingKey] = useState<string | null>(null);
+  const [pendingSave, setPendingSave] = useState<{ match: any; tip: any } | null>(null);
+  const [sortBy, setSortBy] = useState<'time' | 'value' | 'chance'>('time');
+  const [onlyBook, setOnlyBook] = useState<boolean>(false);
+  const [onlyPositive, setOnlyPositive] = useState<boolean>(false);
+  const [selectedMatchModal, setSelectedMatchModal] = useState<any | null>(null);
+
+  const [dayLabels, setDayLabels] = useState<{ [key: number]: string }>({});
 
   useEffect(() => {
-    async function initFootball() {
+    const labels: { [key: number]: string } = {};
+    for (let i = 0; i < 5; i++) {
+      const d = new Date();
+      d.setDate(d.getDate() + i);
+      if (i === 0) labels[i] = tr('Dnes');
+      else if (i === 1) labels[i] = tr('Zítra');
+      else labels[i] = d.toLocaleDateString(loc(), { weekday: 'short', day: 'numeric', month: 'numeric' });
+    }
+    setDayLabels(labels);
+
+    async function initData() {
       try {
         const { data: { user } } = await supabase.auth.getUser();
         setUser(user);
+
+        if (user) {
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('is_premium')
+            .eq('id', user.id)
+            .maybeSingle();
+          
+          if (profile?.is_premium) {
+            setIsVip(true);
+          }
+        }
 
         const res = await fetch('/api/calculate-poisson');
         if (!res.ok) {
@@ -51,79 +85,64 @@ export default function Home() {
       }
     }
 
-    initFootball();
+    initData();
   }, []);
 
-  const handleSwitchSport = async (sport: 'football' | 'lol') => {
-    setActiveSport(sport);
-    setSelectedLeague('Všechny');
-
-    if (sport === 'lol' && !lolLoaded) {
-      setLoadingLol(true);
-      try {
-        const res = await fetch('/api/lol-matches');
-        if (!res.ok) {
-          setLolMatches([]);
-          setLoadingLol(false);
-          return;
-        }
-
-        const json = await res.json();
-        if (json.success) {
-          setLolMatches(json.data || []);
-          setLolLoaded(true);
-        } else {
-          setLolMatches([]);
-        }
-      } catch (err) {
-        setLolMatches([]);
-      } finally {
-        setLoadingLol(false);
-      }
-    }
-  };
-
-  const handleSaveTicket = async (match: any, tip: any) => {
+  // Krok 1: ověření přihlášení a PRO, pak se otevře dialog s částkou
+  const handleSaveTicket = (match: any, tip: any) => {
     if (!user) {
-      alert('Pro uložení tiketu se musíte nejdříve přihlásit.');
+      toast(tr('Pro uložení tiketu se musíte nejdříve přihlásit.'));
       return;
     }
+    if (!isVip) {
+      toast(tr('Ukládání tiketů do profilu je dostupné pouze pro členy s VIP předplatným.'));
+      return;
+    }
+    setPendingSave({ match, tip });
+  };
 
-    const uniqueKey = match.id + '-' + tip.name;
-    setSavingKey(uniqueKey);
+  // Krok 2: uložení s vsazenou částkou
+  const confirmSave = async (stake: number) => {
+    if (!pendingSave || !user) return;
+    const { match, tip } = pendingSave;
+    setSavingKey(match.id + '-' + tip.name);
 
     const { error } = await supabase.from('saved_tickets').insert([
       {
         user_id: user.id,
+        match_id: String(match.id),
+        sport: activeSport,
+        kind: 'single',
         match_info: `${match.home_team} vs ${match.away_team}`,
         tip_name: tip.name,
         odds: tip.bookmakerOdds,
-        probability: tip.probability
-      }
+        probability: tip.probability,
+        stake,
+        kickoff: match.utcDate || null,
+      },
     ]);
 
     setSavingKey(null);
-
-    if (error) {
-      alert('Chyba při ukládání tiketu: ' + error.message);
-    } else {
-      alert('Tiket byl úspěšně uložen do vašeho profilu!');
-    }
+    setPendingSave(null);
+    if (error) toast(tr('Chyba při ukládání tiketu: ') + error.message);
+    else toast(tr('Tiket byl uložen do tvého profilu.'));
   };
+
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
     setUser(null);
+    setIsVip(false);
     window.location.reload();
   };
 
-  const currentMatches = activeSport === 'football' ? footballMatches : lolMatches;
-  const isLoading = activeSport === 'football' ? loadingFootball : loadingLol;
+  const currentMatches = footballMatches;
+  const isLoading = loadingFootball;
 
   const filteredMatches = currentMatches.filter((match) => {
-    const leagueLower = match.league.toLowerCase();
-    const homeLower = match.home_team.toLowerCase();
-    const awayLower = match.away_team.toLowerCase();
+    const leagueLower = (match.league || '').toLowerCase();
+    const homeLower = (match.home_team || '').toLowerCase();
+    const awayLower = (match.away_team || '').toLowerCase();
 
     if (activeSport === 'football') {
       if (
@@ -141,305 +160,377 @@ export default function Home() {
     const matchesLeague = selectedLeague === 'Všechny' || leagueLower.includes(selectedLeague.toLowerCase());
     const matchesSearch = homeLower.includes(searchQuery.toLowerCase()) || awayLower.includes(searchQuery.toLowerCase());
     
-    // OPRAVENÁ LOGIKA FILTROVÁNÍ DNŮ PODLE UTC DATE
     let matchesDay = true;
-    if (match.utcDate) {
+    if (match.utcDate && dayFilter !== 'all') {
       const matchDate = new Date(match.utcDate);
-      const today = new Date();
-      const tomorrow = new Date();
-      tomorrow.setDate(today.getDate() + 1);
-
-      if (dayFilter === 'today') {
-        matchesDay = matchDate.toDateString() === today.toDateString();
-      } else if (dayFilter === 'tomorrow') {
-        matchesDay = matchDate.toDateString() === tomorrow.toDateString();
-      }
+      const targetDate = new Date();
+      targetDate.setDate(targetDate.getDate() + parseInt(dayFilter));
+      
+      matchesDay = matchDate.toDateString() === targetDate.toDateString();
     }
+
+    const hasBook = (match.tips || []).some((t: any) => t.oddsSource === 'bookmaker');
+    const hasPositive = (match.tips || []).some((t: any) => typeof t.value === 'string' && t.value.startsWith('+'));
+    if (onlyBook && !hasBook) return false;
+    if (onlyPositive && !hasPositive) return false;
 
     return matchesLeague && matchesSearch && matchesDay;
   });
 
+  const bestValue = (m: any) => Math.max(-99, ...(m.tips || []).map((t: any) => (typeof t.value === 'string' ? parseFloat(t.value) : -99)));
+  const bestChance = (m: any) => Math.max(0, ...(m.tips || []).map((t: any) => parseFloat(t.probability) || 0));
+  const sortedMatches = [...filteredMatches].sort((a, b) => {
+    if (a.status === 'LIVE' && b.status !== 'LIVE') return -1;
+    if (b.status === 'LIVE' && a.status !== 'LIVE') return 1;
+    if (sortBy === 'value') return bestValue(b) - bestValue(a);
+    if (sortBy === 'chance') return bestChance(b) - bestChance(a);
+    return new Date(a.utcDate || 0).getTime() - new Date(b.utcDate || 0).getTime();
+  });
+
+  // Tipy s nejvyšším kladným value (jen z reálných kurzů a bez varování model ≠ trh)
+  const topValue = filteredMatches
+    .flatMap((m: any) => (m.tips || []).map((t: any) => ({ m, t })))
+    .filter(({ t }: any) => t.oddsSource === 'bookmaker' && !t.gapWarning && !t.valueSuspicious && typeof t.value === 'string' && parseFloat(t.value) >= 2)
+    .sort((a: any, b: any) => parseFloat(b.t.value) - parseFloat(a.t.value))
+    .slice(0, 3);
+
   return (
-    <div className="min-h-screen bg-gray-950 text-slate-100 selection:bg-emerald-500 selection:text-black">
+    <div className="min-h-screen bg-[#0c1c19] text-slate-100 selection:bg-amber-500 selection:text-black font-sans relative">
       
-      {/* 🚀 HEADER */}
-      <header className="sticky top-0 z-50 bg-gray-900/80 backdrop-blur-xl border-b border-emerald-500/10 px-4 py-4 shadow-2xl">
-        <div className="max-w-6xl mx-auto flex flex-col items-center gap-4">
-          
-          <div className="flex items-center gap-3 group cursor-pointer">
-            <div className="relative">
-              <div className="absolute -inset-1 bg-gradient-to-r from-emerald-500 to-teal-500 rounded-2xl blur opacity-30 group-hover:opacity-75 transition duration-500"></div>
-              <div className="relative w-11 h-11 rounded-2xl bg-gray-950 border border-emerald-500/30 flex items-center justify-center text-2xl shadow-inner">
-                🤖
-              </div>
-            </div>
-            <div className="text-center">
-              <h1 className="font-black text-transparent bg-clip-text bg-gradient-to-r from-white via-emerald-300 to-teal-400 text-2xl tracking-wider uppercase font-mono">
-                AI Sázkový Guru
-              </h1>
-              <p className="text-[10px] text-gray-400 tracking-widest uppercase font-semibold">Smart Predictive Engine</p>
-            </div>
-          </div>
+      {/* 🚀 PRÉMIOVÁ HLAVIČKA */}
+      <AppHeader active="/tips" user={user} isVip={isVip} onLogout={handleLogout} />
 
-          <nav className="bg-gray-950/90 border border-gray-800/80 p-1.5 rounded-full flex flex-wrap items-center justify-center gap-1 shadow-inner">
-            <Link 
-              href="/" 
-              className="bg-gradient-to-r from-emerald-600 to-teal-600 text-white font-bold px-4 py-2 rounded-full text-xs transition-all shadow-lg shadow-emerald-900/40 flex items-center gap-2"
-            >
-              <span className="text-sm">🎯</span> Tipy & Zápasy
-            </Link>
-
-            <Link 
-              href="/risk-bombs" 
-              className="text-gray-400 hover:text-white hover:bg-gray-900/80 font-medium px-4 py-2 rounded-full text-xs transition-all flex items-center gap-2"
-            >
-              <span className="text-sm">💣</span> Riskantní Bomby
-            </Link>
-
-            <Link 
-              href="/generator" 
-              className="text-gray-400 hover:text-white hover:bg-gray-900/80 font-medium px-4 py-2 rounded-full text-xs transition-all flex items-center gap-2"
-            >
-              <span className="text-sm">⚡</span> AI Generátor
-            </Link>
-
-            <Link 
-              href="/history" 
-              className="text-gray-400 hover:text-white hover:bg-gray-900/80 font-medium px-4 py-2 rounded-full text-xs transition-all flex items-center gap-2"
-            >
-              <span className="text-sm">📊</span> Historie
-            </Link>
-          </nav>
-
-          <div className="flex items-center gap-3">
-            {user ? (
-              <div className="flex items-center gap-3 bg-gray-950 border border-gray-800/90 px-4 py-1.5 rounded-full shadow-inner">
-                <div className="relative flex items-center justify-center">
-                  <span className="animate-ping absolute inline-flex h-2 w-2 rounded-full bg-emerald-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                </div>
-
-                <span className="text-gray-300 text-xs font-mono">{user.email}</span>
-                
-                <Link 
-                  href="/profile" 
-                  className="bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs font-bold px-3 py-1 rounded-full transition-all flex items-center gap-1.5"
-                >
-                  <span>👤</span> Profil
-                </Link>
-
-                <button 
-                  onClick={handleLogout}
-                  className="text-gray-500 hover:text-red-400 text-xs font-medium transition-all px-1.5"
-                >
-                  Odhlásit
-                </button>
-              </div>
-            ) : (
-              <Link 
-                href="/login" 
-                className="relative group overflow-hidden rounded-full p-[1px] focus:outline-none"
-              >
-                <span className="absolute inset-0 bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-500 rounded-full group-hover:opacity-100 transition duration-300 opacity-75"></span>
-                <span className="relative px-6 py-2 rounded-full bg-gray-950 flex items-center gap-2 text-xs font-bold text-white transition duration-300 group-hover:bg-opacity-0">
-                  <span>🔑</span> Přihlásit se
-                </span>
-              </Link>
-            )}
-          </div>
-
-        </div>
-      </header>
-
-      {/* OBSAH STRÁNKY */}
-      <main className="max-w-6xl mx-auto p-4 sm:p-6 space-y-6">
+      <main className="max-w-7xl mx-auto p-4 sm:p-6 space-y-6">
         
-        <div className="bg-gray-900/90 border border-gray-800 p-2 rounded-2xl shadow-xl backdrop-blur">
-          <div className="flex items-center gap-2 w-full">
-            <button
-              onClick={() => handleSwitchSport('football')}
-              className={`flex-1 py-3 px-4 rounded-xl text-xs sm:text-sm font-bold transition-all flex items-center justify-center gap-2.5 ${
-                activeSport === 'football'
-                  ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-lg shadow-emerald-900/40'
-                  : 'bg-gray-950 text-gray-400 hover:bg-gray-800/80 hover:text-gray-200'
-              }`}
-            >
-              <span className="text-base">⚽</span> Fotbalové analýzy
-            </button>
-            <button
-              onClick={() => handleSwitchSport('lol')}
-              className={`flex-1 py-3 px-4 rounded-xl text-xs sm:text-sm font-bold transition-all flex items-center justify-center gap-2.5 ${
-                activeSport === 'lol'
-                  ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-lg shadow-emerald-900/40'
-                  : 'bg-gray-950 text-gray-400 hover:bg-gray-800/80 hover:text-gray-200'
-              }`}
-            >
-              <span className="text-base">🎮</span> League of Legends (LoL)
-            </button>
-          </div>
-        </div>
-
-        <div className="bg-gradient-to-r from-gray-900 via-gray-900/90 to-emerald-950/30 border border-gray-800 p-6 rounded-2xl shadow-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 relative overflow-hidden">
-          <div className="flex items-start sm:items-center gap-4">
-            <div className="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-2xl flex-shrink-0">
-              ⚡
+        {!isVip && (
+          <div className="bg-gradient-to-r from-amber-950/40 via-[#14292a] to-amber-950/30 border border-amber-500/30 p-4 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xl">
+            <div className="flex items-center gap-3">
+              <span className="text-2xl">🔒</span>
+              <div>
+                <h4 className="text-sm font-bold text-white"><T>{`Free režim (Omezený přístup)`}</T></h4>
+                <p className="text-xs text-gray-300"><T>{`Vidíte pouze základní vzorek 3 předpovědí denně. Pro plný přístup ke všem zápasům, value analýzám a rozborům zápasů aktivujte VIP členství.`}</T></p>
+              </div>
             </div>
-            <div className="space-y-1">
-              <h2 className="text-sm sm:text-base font-extrabold text-emerald-400 tracking-wide uppercase">
-                {activeSport === 'football' ? 'Poissonův model pro fotbalové trávníky' : 'Analýza sérií, draftů a map pro LoL'}
-              </h2>
-              <p className="text-xs text-gray-400 max-w-2xl leading-relaxed">
-                {activeSport === 'football' 
-                  ? 'Pokročilé matematické vyhodnocení gólových průměrů, vzájemných zápasů a aktuální formy.' 
-                  : 'Sledujte predikce a kurzy pro turnaje LEC, LCK, LPL a LCS.'}
-              </p>
+            <Link href="/" className="bg-gradient-to-r from-amber-500 to-yellow-600 hover:from-amber-400 hover:to-yellow-500 text-black font-black text-xs px-5 py-2.5 rounded-xl whitespace-nowrap shadow-lg shadow-amber-950/50 transition-all">
+              <T>{`Aktivovat VIP za 199 Kč`}</T>
+            </Link>
+          </div>
+        )}
+
+        <div className="flex flex-col lg:flex-row items-center justify-between gap-4 bg-[#14292a] border border-gray-800/80 p-3 rounded-2xl shadow-lg">
+          <span className="text-xs font-bold text-gray-200 px-2"><T>{`⚽ Fotbalové analýzy`}</T></span>
+
+          <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto justify-end">
+            <div className="flex items-center gap-1 bg-[#0a1715] p-1 rounded-xl border border-gray-800 overflow-x-auto max-w-full">
+              <button onClick={() => setDayFilter('all')} className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap ${dayFilter === 'all' ? 'bg-gray-800 text-white' : 'text-gray-300 hover:text-white'}`}><T>{`Vše`}</T></button>
+              <button onClick={() => setDayFilter('0')} className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap ${dayFilter === '0' ? 'bg-amber-500 text-black font-black' : 'text-gray-300 hover:text-white'}`}>{dayLabels[0] || tr('Dnes')}</button>
+              <button onClick={() => setDayFilter('1')} className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap ${dayFilter === '1' ? 'bg-amber-500 text-black font-black' : 'text-gray-300 hover:text-white'}`}>{dayLabels[1] || tr('Zítra')}</button>
+              <button onClick={() => setDayFilter('2')} className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap ${dayFilter === '2' ? 'bg-amber-500 text-black font-black' : 'text-gray-300 hover:text-white'}`}>{dayLabels[2] || '+2 dny'}</button>
+            </div>
+
+            <div className="relative w-full sm:w-56">
+              <input 
+                type="text"
+                placeholder={tr("🔍 Hledat tým...")}
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full bg-[#0a1715] border border-gray-800 rounded-xl px-3.5 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-amber-500 transition-all shadow-inner"
+              />
             </div>
           </div>
         </div>
 
-        {/* Filtry dnů a vyhledávání */}
-        <div className="flex flex-col md:flex-row items-center justify-between gap-4 pt-2">
-          
-          <div className="flex items-center gap-2 w-full md:w-auto bg-gray-900/60 p-1.5 rounded-2xl border border-gray-800">
-            <button
-              onClick={() => setDayFilter('all')}
-              className={`flex-1 md:flex-initial px-4 py-2 rounded-xl text-xs font-bold transition-all ${
-                dayFilter === 'all' ? 'bg-emerald-600 text-white shadow-md' : 'text-gray-400 hover:text-white hover:bg-gray-800/50'
-              }`}
-            >
-              📅 Všechny
-            </button>
-            <button
-              onClick={() => setDayFilter('today')}
-              className={`flex-1 md:flex-initial px-4 py-2 rounded-xl text-xs font-bold transition-all ${
-                dayFilter === 'today' ? 'bg-emerald-600 text-white shadow-md' : 'text-gray-400 hover:text-white hover:bg-gray-800/50'
-              }`}
-            >
-              🔥 Dnes
-            </button>
-            <button
-              onClick={() => setDayFilter('tomorrow')}
-              className={`flex-1 md:flex-initial px-4 py-2 rounded-xl text-xs font-bold transition-all ${
-                dayFilter === 'tomorrow' ? 'bg-emerald-600 text-white shadow-md' : 'text-gray-400 hover:text-white hover:bg-gray-800/50'
-              }`}
-            >
-              ⏳ Zítra
-            </button>
-          </div>
-
-          <div className="relative w-full md:w-80">
-            <input 
-              type="text"
-              placeholder="🔍 Hledat podle týmu..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full bg-gray-900 border border-gray-800 rounded-xl px-4 py-2.5 text-xs sm:text-sm text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 transition-all shadow-inner"
-            />
-          </div>
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-gray-400 font-semibold"><T>{`Řadit:`}</T></span>
+          {([['time', tr('Podle času')], ['value', tr('Podle value')], ['chance', tr('Podle šance')]] as const).map(([k, l]) => (
+            <button key={k} onClick={() => setSortBy(k)} className={`px-3 py-1.5 rounded-lg font-bold border cursor-pointer ${sortBy === k ? 'bg-amber-500 text-black border-amber-500' : 'bg-[#0a1715] text-gray-300 border-gray-800 hover:border-gray-600'}`}>{l}</button>
+          ))}
+          <span className="w-px h-5 bg-gray-700 mx-1" />
+          <button onClick={() => setOnlyBook(!onlyBook)} className={`px-3 py-1.5 rounded-lg font-bold border cursor-pointer ${onlyBook ? 'bg-amber-500 text-black border-amber-500' : 'bg-[#0a1715] text-gray-300 border-gray-800 hover:border-gray-600'}`}><T>{`Jen s kurzem sázkovky`}</T></button>
+          <button onClick={() => setOnlyPositive(!onlyPositive)} className={`px-3 py-1.5 rounded-lg font-bold border cursor-pointer ${onlyPositive ? 'bg-amber-500 text-black border-amber-500' : 'bg-[#0a1715] text-gray-300 border-gray-800 hover:border-gray-600'}`}><T>{`Jen kladné value`}</T></button>
         </div>
 
-        {/* Seznam zápasů */}
+        {topValue.length > 0 && (
+          <div className="bg-[#14292a] border border-emerald-500/30 rounded-2xl p-4 space-y-2">
+            <div className="text-xs font-bold text-emerald-300"><T>{`Nejvyšší value právě teď`}</T></div>
+            <div className="grid md:grid-cols-3 gap-2">
+              {topValue.map(({ m, t }: any, i: number) => (
+                <button key={i} onClick={() => setSelectedMatchModal(m)} className="text-left bg-[#0a1715] border border-gray-800 hover:border-emerald-500/50 rounded-xl p-3 cursor-pointer">
+                  <div className="text-[11px] text-gray-400 truncate">{m.home_team} vs {m.away_team}</div>
+                  <div className="text-xs font-semibold text-white truncate">{trTip(t.name)}</div>
+                  <div className="text-[11px] mt-0.5"><span className="text-emerald-300 font-bold">{tr('Value')} {t.value}</span> <span className="text-gray-400">· @{t.bookmakerOdds} ({t.bookmaker})</span></div>
+                </button>
+              ))}
+            </div>
+            <p className="text-[10px] text-gray-500"><T>{`Jen zápasy s reálným kurzem sázkovky, kde se model s trhem výrazně nerozchází. Value je odhad, ne záruka.`}</T></p>
+          </div>
+        )}
+
         {isLoading ? (
-          <div className="bg-gray-900/50 border border-gray-800/80 p-16 rounded-2xl text-center space-y-3">
-            <div className="inline-block w-8 h-8 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
-            <p className="text-xs text-gray-400 font-medium">Načítám aktuální data a počítám modelové šance...</p>
-          </div>
-        ) : filteredMatches.length === 0 ? (
-          <div className="bg-gray-900/50 border border-gray-800/80 p-16 rounded-2xl text-center text-gray-400 text-xs">
-            Žádné zápasy neodpovídají zadanému filtru.
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {filteredMatches.map((match) => (
-              <div key={match.id} className="bg-gray-900/90 hover:bg-gray-900 border border-gray-800/90 hover:border-gray-700 p-5 rounded-2xl shadow-xl transition-all flex flex-col lg:flex-row items-center justify-between gap-6">
-                
-                <div className="w-full lg:w-[280px] flex-shrink-0 flex flex-col justify-center gap-2">
-                  <div className="flex items-center gap-2">
-                    <span className="inline-block bg-gray-800/90 text-gray-300 border border-gray-700/60 px-2.5 py-0.5 rounded-lg text-[11px] font-semibold tracking-wide">
-                      {match.league}
-                    </span>
-
-                    {match.status === 'LIVE' && (
-                      <span className="bg-red-500/20 text-red-400 border border-red-500/40 animate-pulse text-[10px] font-black px-2 py-0.5 rounded-lg">
-                        🔴 LIVE
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="text-base font-extrabold text-white leading-snug min-h-[44px] flex items-center">
-                    <span>{match.home_team} vs {match.away_team}</span>
-                  </div>
-
-                  {match.score ? (
-                    <div className="text-xs font-bold text-amber-400 flex items-center gap-1.5">
-                      <span>Skóre:</span>
-                      <span className="bg-gray-950 px-2.5 py-1 rounded-lg border border-amber-500/30 text-amber-300">{match.score}</span>
-                    </div>
-                  ) : (
-                    <div className="text-xs text-gray-400 flex items-center gap-1.5 font-medium">
-                      <span>🕒</span> {match.match_date}
-                    </div>
-                  )}
+          <div className="space-y-3" aria-busy="true" aria-label={tr("Načítám tržní data")}>
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="bg-[#14292a] border border-gray-800/80 rounded-2xl p-5 flex flex-col xl:flex-row gap-4 animate-pulse">
+                <div className="xl:w-[260px] space-y-2">
+                  <div className="h-4 w-24 bg-[#0a1715] rounded" />
+                  <div className="h-5 w-48 bg-[#0a1715] rounded" />
+                  <div className="h-3 w-32 bg-[#0a1715] rounded" />
                 </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 w-full flex-1">
-                  {match.tips.map((tip: any, idx: number) => {
-                    const uniqueKey = match.id + '-' + tip.name;
-                    const isSaving = savingKey === uniqueKey;
-
-                    return (
-                      <div 
-                        key={idx} 
-                        className={`p-3.5 rounded-xl border flex flex-col justify-between h-[120px] transition-all relative ${
-                          tip.isSureBet 
-                            ? 'bg-gradient-to-b from-amber-950/20 to-gray-950/80 border-amber-500/50 shadow-md shadow-amber-950/10' 
-                            : 'bg-gray-950/60 border-gray-800/80 hover:border-gray-700'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between">
-                          {tip.isSureBet ? (
-                            <span className="bg-amber-500 text-black text-[9px] font-black px-2 py-0.5 rounded-md uppercase tracking-wider">
-                              ⭐ DOPORUČENO
-                            </span>
-                          ) : (
-                            <span className="text-[9px] text-gray-500 font-bold uppercase tracking-wider">
-                              TIP #{idx + 1}
-                            </span>
-                          )}
-                          <span className="text-[11px] text-emerald-400 font-bold bg-emerald-500/10 px-2 py-0.5 rounded-md border border-emerald-500/20">
-                            {tip.probability}
-                          </span>
-                        </div>
-
-                        <div className="text-xs font-bold text-gray-200 h-[32px] flex items-center leading-snug">
-                          <span className="line-clamp-2">{tip.name}</span>
-                        </div>
-
-                        <div className="flex items-center justify-between pt-2 border-t border-gray-800/80">
-                          <div className="flex items-baseline gap-1.5">
-                            <span className="text-[10px] text-gray-400">Kurz</span>
-                            <span className="text-sm font-black text-emerald-400">{tip.bookmakerOdds}</span>
-                          </div>
-
-                          <button
-                            onClick={() => handleSaveTicket(match, tip)}
-                            disabled={isSaving}
-                            className="bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white text-[11px] font-bold px-3 py-1.5 rounded-lg transition-all shadow shadow-emerald-900/30 disabled:opacity-50 flex items-center gap-1.5"
-                          >
-                            <span>{isSaving ? '⏳' : '📥'}</span> {isSaving ? 'Ukládám' : 'Uložit'}
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
+                <div className="grid md:grid-cols-3 gap-3 flex-1">
+                  {[0, 1, 2].map((j) => <div key={j} className="h-24 bg-[#0a1715] rounded-xl" />)}
                 </div>
-
               </div>
             ))}
+            <p className="text-xs text-gray-400 text-center pt-1"><T>{`Načítám tržní data… při prvním načtení to může trvat několik sekund.`}</T></p>
+          </div>
+
+        ) : sortedMatches.length === 0 ? (
+          <div className="bg-[#14292a] border border-gray-800/80 p-16 rounded-2xl text-center text-gray-300 text-xs shadow-xl">
+            <p><T>{`Žádné zápasy neodpovídají zadanému filtru.`}</T></p>
+            <button
+              onClick={() => { setSearchQuery(''); setSelectedLeague('Všechny'); setDayFilter('all'); setOnlyBook(false); setOnlyPositive(false); }}
+              className="mt-4 bg-gray-800 hover:bg-amber-500 hover:text-black text-white text-xs font-bold px-4 py-2 rounded-xl transition-all"
+            >
+              <T>{`Zrušit všechny filtry`}</T>
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {sortedMatches.map((match, index) => {
+              const isLocked = !isVip && index >= 3;
+
+              return (
+                <div 
+                  key={match.id} 
+                  className={`bg-[#14292a] border border-gray-800/80 p-4 rounded-2xl shadow-lg transition-all flex flex-col xl:flex-row items-center justify-between gap-5 relative ${isLocked ? 'opacity-60 select-none' : 'hover:bg-[#193230] hover:border-gray-700'}`}
+                >
+                  
+                  {isLocked && (
+                    <div className="absolute inset-0 z-20 backdrop-blur-sm bg-black/40 rounded-2xl flex items-center justify-center p-4">
+                      <div className="bg-[#14292a] border border-amber-500/40 p-4 rounded-xl text-center space-y-2 shadow-2xl max-w-sm">
+                        <span className="text-xl">🔒</span>
+                        <h5 className="text-xs font-bold text-white"><T>{`Zamčená předpověď`}</T></h5>
+                        <p className="text-[10px] text-gray-300"><T>{`Tento a všechny další zápasy jsou dostupné pouze pro členy s předplatným VIP.`}</T></p>
+                        <Link href="/" className="inline-block bg-amber-500 text-black text-[10px] font-black px-4 py-1.5 rounded-lg shadow">
+                          <T>{`Odemknout za 199 Kč`}</T>
+                        </Link>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="w-full xl:w-[260px] flex-shrink-0 flex flex-col justify-between gap-2 border-b xl:border-b-0 xl:border-r border-gray-800/60 pb-3 xl:pb-0 xl:pr-4">
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between xl:justify-start gap-2">
+                        <span className="text-[10px] font-bold text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded">
+                          {match.league}
+                        </span>
+                        {match.status === 'LIVE' && (
+                          <span className="bg-red-500/20 text-red-400 border border-red-500/40 text-[10px] font-black px-2 py-0.5 rounded">
+                            <T>{`🔴 LIVE`}</T>
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="text-sm font-extrabold text-white leading-snug">
+                        <span>{match.home_team}</span>
+                        <span className="text-gray-400 font-normal px-1.5"><T>{`vs`}</T></span>
+                        <span>{match.away_team}</span>
+                      </div>
+
+                      <div className="text-[11px] text-gray-300 flex items-center gap-2 font-mono">
+                        <span>🕒 {match.match_date}</span>
+                        {match.score && (
+                          <span className="text-amber-400 font-bold bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
+                            Skóre: {match.score}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={() => !isLocked && setSelectedMatchModal(match)}
+                      className="w-full bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 text-[11px] font-bold py-1.5 px-3 rounded-xl transition-all flex items-center justify-center gap-1.5 shadow-inner mt-1 cursor-pointer"
+                    >
+                      <span>📊</span> <T>{`Rozbor zápasu`}</T>
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3 w-full flex-1">
+                    {match.tips.map((tip: any, idx: number) => {
+                      const uniqueKey = match.id + '-' + tip.name;
+                      const isSaving = savingKey === uniqueKey;
+
+                      return (
+                        <div 
+                          key={idx} 
+                          className={`p-3 rounded-xl border flex flex-col justify-between transition-all relative ${
+                            tip.isSureBet 
+                              ? 'bg-gradient-to-r from-amber-950/20 via-[#0a1715] to-[#0a1715] border-amber-500/40 shadow-inner' 
+                              : 'bg-[#0a1715] border-gray-800/80 hover:border-gray-700'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between mb-1">
+                            {tip.isSureBet ? (
+                              <span className="bg-amber-500 text-black text-[9px] font-black px-1.5 py-0.2 rounded">
+                                <T>{`⭐ Vysoká šance`}</T>
+                              </span>
+                            ) : (
+                              <span className="text-[9px] text-gray-400 font-bold">
+                                {tr("Odhad")} #{idx + 1}
+                              </span>
+                            )}
+
+                            <div className="flex items-center gap-1">
+                              {tip.value && (
+                                <span
+                                  title={tip.valueSuspicious ? "Neobvykle vysoké value nebo odlehlý kurz jedné sázkovky. Nejspíš chyba v kurzu, před sázkou ho ověř." : "Value: průměrný zisk (+) nebo ztráta (−) na 100 Kč vsazených. Rozbor najdeš po kliknutí na zápas."}
+                                  className={`text-[10px] font-bold px-1.5 py-0.2 rounded border ${tip.value.startsWith('+') ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30' : 'text-red-400 bg-red-500/10 border-red-500/25'}`}
+                                >
+                                  {tr('Value')} {tip.value}{tip.valueSuspicious ? ' ⚠' : ''}
+                                </span>
+                              )}
+                              <span className="text-[10px] text-amber-400 font-bold bg-amber-500/10 px-1.5 py-0.2 rounded border border-amber-500/20">
+                                {tip.probability}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="text-xs font-semibold text-gray-100 py-1 line-clamp-1">
+                            {trTip(tip.name)}
+                          </div>
+
+                          {tip.oddsList && tip.oddsList.length > 1 && (
+                            <div className="text-[10px] text-gray-400 pt-1 leading-snug" title={tr("Nabídka kurzů u jednotlivých sázkovek")}>
+                              {tip.oddsList.map((o: any) => `${o.book} ${o.price}`).join(' · ')}
+                            </div>
+                          )}
+                          <div className="flex items-center justify-between pt-2 border-t border-gray-800/60 mt-1">
+                            <div className="flex items-baseline gap-1">
+                              <span className="text-[10px] text-gray-400">
+                                {tip.oddsSource === 'bookmaker' ? `${tr('Kurz')} (${tip.bookmaker}):` : tr('Kurz modelu:')}
+                              </span>
+                              <span className="text-xs font-black text-amber-400 font-mono">{tip.bookmakerOdds}</span>
+                              {tip.gapWarning && (
+                                <span title={`Trh dává ${tip.marketProbability}, model ${tip.probability}`} className="text-[10px] text-red-400 font-bold"><T>{`⚠ model ≠ trh`}</T></span>
+                              )}
+                            </div>
+
+                            <button
+                              onClick={() => handleSaveTicket(match, tip)}
+                              disabled={isSaving}
+                              className="bg-gray-800 hover:bg-amber-500 hover:text-black active:scale-95 text-white text-[10px] font-bold px-2.5 py-1 rounded-lg transition-all disabled:opacity-50 flex items-center gap-1 shadow-sm cursor-pointer"
+                            >
+                              <span>{isSaving ? '⏳' : '📥'}</span> {isSaving ? '...' : tr('Uložit')}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                </div>
+              );
+            })}
           </div>
         )}
 
       </main>
+
+      {/* 🚀 ROZŠÍŘENÁ HLOUBKOVÁ AI ANALÝZA (MODÁLNÍ OKNO) */}
+      {pendingSave && user && (
+        <StakeDialog
+          supabase={supabase}
+          userId={user.id}
+          title={`${pendingSave.match.home_team} vs ${pendingSave.match.away_team} – ${trTip(pendingSave.tip.name)}`}
+          odds={Number(pendingSave.tip.bookmakerOdds)}
+          onConfirm={confirmSave}
+          onClose={() => setPendingSave(null)}
+        />
+      )}
+
+      {selectedMatchModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-[#14292a] border border-amber-500/30 w-full max-w-3xl rounded-3xl shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
+            
+            <div className="bg-[#0a1715] border-b border-gray-800 p-6 flex items-center justify-between">
+              <div className="flex items-center gap-3.5">
+                <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-amber-500/20 to-yellow-500/10 border border-amber-500/40 flex items-center justify-center text-xl shadow-inner">
+                  📊
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-black text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded">
+                      {selectedMatchModal.league}
+                    </span>
+                    <span className="text-[10px] text-gray-300 font-mono">
+                      🕒 {selectedMatchModal.match_date}
+                    </span>
+                  </div>
+                  <h3 className="text-xl font-black text-white mt-0.5">
+                    {selectedMatchModal.home_team} <span className="text-gray-400 font-normal"><T>{`vs`}</T></span> {selectedMatchModal.away_team}
+                  </h3>
+                </div>
+              </div>
+              <button 
+                onClick={() => setSelectedMatchModal(null)}
+                className="w-9 h-9 rounded-xl bg-gray-900 border border-gray-800 text-gray-300 hover:text-white flex items-center justify-center transition-all font-bold cursor-pointer hover:bg-gray-800"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-6 space-y-6 max-h-[80vh] overflow-y-auto">
+              
+              <MatchAnalysis matchId={selectedMatchModal.id} />
+
+              <ValueExplainer />
+
+              <div className="space-y-3">
+                <h4 className="text-xs font-bold text-gray-300">
+                  <T>{`Doporučené hlavní sázky`}</T>
+                </h4>
+                <div className="space-y-2">
+                  {selectedMatchModal.tips?.map((t: any, i: number) => (
+                    <div key={i} className="bg-[#0a1715] border border-gray-800 p-4 rounded-xl flex items-center justify-between hover:border-gray-700 transition-all">
+                      <div className="space-y-0.5">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-white">{trTip(t.name)}</span>
+                          {t.isSureBet && (
+                            <span className="bg-amber-500 text-black text-[9px] font-black px-1.5 py-0.2 rounded">
+                              <T>{`⭐ Vysoká šance`}</T>
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[10px] text-gray-300">
+                          <T>{`Modelová šance:`}</T> <span className="text-amber-400 font-bold">{t.probability}</span>
+                          {t.value && <span className={`ml-2 font-bold ${t.value.startsWith('+') ? 'text-emerald-300' : 'text-red-400'}`}>{tr('Value')}: {t.value}</span>}
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-xs font-mono font-black text-amber-400 bg-amber-500/10 border border-amber-500/30 px-3 py-1.5 rounded-lg">
+                          @{t.bookmakerOdds}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+            </div>
+
+            <div className="bg-[#0a1715] border-t border-gray-800 p-4 flex justify-between items-center">
+              <span className="text-[10px] text-gray-400"><T>{`Poissonův model ApexOdds`}</T></span>
+              <button
+                onClick={() => setSelectedMatchModal(null)}
+                className="bg-gradient-to-r from-amber-500 to-yellow-600 hover:from-amber-400 hover:to-yellow-500 text-black text-xs font-black px-6 py-2.5 rounded-xl transition-all shadow-md cursor-pointer"
+              >
+                <T>{`Zavřít hloubkovou analýzu`}</T>
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
