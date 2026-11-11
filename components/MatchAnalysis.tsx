@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { T, tr, loc } from '@/lib/i18n';
+import { authFetch } from '@/lib/auth-fetch';
 
 const pc = (x: number) => `${Math.round(x * 100)}%`;
 const day = (d: string) => new Date(d).toLocaleDateString(loc(), { day: 'numeric', month: 'numeric', year: '2-digit' });
@@ -73,9 +74,9 @@ export default function MatchAnalysis({ matchId }: { matchId: number | string })
   useEffect(() => {
     let live = true;
     setD(null); setErr('');
-    fetch(`/api/match-analysis?id=${matchId}`)
+    authFetch(`/api/match-analysis?id=${matchId}`)
       .then((r) => r.json())
-      .then((j) => { if (!live) return; j.success ? setD(j) : setErr(j.error || tr('Analýzu se nepodařilo načíst.')); })
+      .then((j) => { if (!live) return; j.success ? setD(j) : setErr(j.error ? tr(j.error) : tr('Analýzu se nepodařilo načíst.')); })
       .catch(() => live && setErr(tr('Analýzu se nepodařilo načíst. Zkus to za chvíli.')));
     return () => { live = false; };
   }, [matchId]);

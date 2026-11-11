@@ -43,6 +43,7 @@ export interface OddsEvent {
   draw1x2?: MarketPrice;
   away1x2?: MarketPrice;
   over25?: MarketPrice;
+  under25?: MarketPrice;
 }
 
 // ---------- párování názvů týmů (football-data vs. Odds API) ----------
@@ -76,6 +77,10 @@ export function sameTeam(a: string, b: string): boolean {
   return [...small].every((w) => big.has(w));
 }
 
+// Burzy (exchange) uvádějí kurz před odečtením provize a často s malým objemem. Pro odhad šance trhu je bereme,
+// ale jako „nejlepší kurz" je nenabízíme, protože by uměle zvyšovaly value.
+const EXCHANGES = new Set(['betfair_ex_eu', 'betfair_ex_uk', 'betfair_ex_au', 'matchbook', 'smarkets', 'betdaq']);
+
 // ---------- agregace kurzů přes sázkovky ----------
 export function aggregate(
   bookmakers: any[],
@@ -102,6 +107,7 @@ export function aggregate(
     const total = implied.reduce((a, b) => a + b, 0);
     ids.forEach((id, i) => {
       sums[id] = (sums[id] || 0) + implied[i] / total; // odstranění marže
+      if (EXCHANGES.has(bk.key)) return;
       (all[id] = all[id] || []).push({ book: bk.title || bk.key, price: price[id] });
       if (!best[id] || price[id] > best[id].price) best[id] = { price: price[id], book: bk.title || bk.key };
     });
@@ -109,6 +115,7 @@ export function aggregate(
   }
 
   if (books === 0) return null;
+  if (!ids.every((id) => best[id])) return null; // kurzy jen z burz → nenabízet
   const out: Record<string, MarketPrice> = {};
   for (const id of ids) {
     out[id] = {
@@ -184,11 +191,12 @@ export async function getLeagueEvents(compCode: string): Promise<OddsEvent[]> {
       draw1x2: h2h?.draw,
       away1x2: h2h?.away,
       over25: totals?.over,
+      under25: totals?.under,
     };
   });
 }
 
-export async function getBttsYes(sportKey: string, eventId: string): Promise<MarketPrice | null> {
+export async function getBtts(sportKey: string, eventId: string): Promise<{ yes?: MarketPrice; no?: MarketPrice } | null> {
   const cfg = oddsConfig();
   const data = await oddsFetch(
     `/sports/${sportKey}/events/${eventId}/odds/`,
@@ -199,7 +207,7 @@ export async function getBttsYes(sportKey: string, eventId: string): Promise<Mar
   const agg = aggregate(data.bookmakers, 'btts', ['yes', 'no'], (o) =>
     o.name === 'Yes' ? 'yes' : o.name === 'No' ? 'no' : null
   );
-  return agg?.yes ?? null;
+  return agg ? { yes: agg.yes, no: agg.no } : null;
 }
 
 export function findEvent(events: OddsEvent[], home: string, away: string, utcDate: string): OddsEvent | undefined {

@@ -14,7 +14,11 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Nejste přihlášen.' }, { status: 401 });
     }
 
-    const priceId = process.env.STRIPE_PRICE_ID || 'price_1UaFZARvnsGKFIExKHkXeeKf';
+    const priceId = process.env.STRIPE_PRICE_ID;
+    if (!priceId) {
+      console.error('Chybí STRIPE_PRICE_ID');
+      return NextResponse.json({ error: 'Platba není nastavená.' }, { status: 500 });
+    }
     const origin = req.headers.get('origin') || process.env.NEXT_PUBLIC_SITE_URL;
     if (!origin) {
       return NextResponse.json({ error: 'Nelze určit adresu webu.' }, { status: 400 });

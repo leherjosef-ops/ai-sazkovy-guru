@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildLeagueModel, predictMatch, scoreMatrix, BASIC_MODEL, FULL_MODEL } from '../.test-build/poisson.ts';
+import { buildLeagueModel, predictMatch, scoreMatrix, BASIC_MODEL, FULL_MODEL, MLE_MODEL } from '../.test-build/poisson.ts';
 import { runBacktest, summarize, calibration } from '../.test-build/backtest.ts';
 
 const DAY = 86400000;
@@ -81,4 +81,22 @@ test('kalibrace: šance modelu se zhruba shodují se skutečností', () => {
   const cal = calibration(runBacktest(simulatedLeague(), BASIC_MODEL)).filter((x) => x.count >= 100);
   assert.ok(cal.length >= 3);
   for (const x of cal) assert.ok(Math.abs(x.predicted - x.actual) < 0.12, `${x.predicted} vs ${x.actual}`);
+});
+
+test('nový model (síla soupeřů): pozná silný a slabý tým a nováčka bere jako průměr', () => {
+  const ms = simulatedLeague(12, 3);
+  const m = buildLeagueModel(ms, MLE_MODEL);
+  assert.ok(m.mle, 'model se má odhadnout');
+  const p = predictMatch(m, 0, 1);
+  assert.ok(Math.abs(p.homeWin + p.draw + p.awayWin - 1) < 1e-9);
+  // domácí výhoda kladná, jako v simulaci (1.45 vs 1.15)
+  assert.ok(m.mle.home > 0);
+  // neznámý tým (nováček) má sílu 0 = průměr
+  const q = predictMatch(m, 999, 998);
+  assert.ok(Math.abs(q.lambdaHome - Math.exp(m.mle.c + m.mle.home)) < 1e-9);
+});
+
+test('nový model v backtestu porazí naivní odhad', () => {
+  const r = runBacktest(simulatedLeague(16, 4), MLE_MODEL);
+  assert.ok(summarize(r).logLoss < summarize(r, 'base').logLoss);
 });

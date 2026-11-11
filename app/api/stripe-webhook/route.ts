@@ -12,8 +12,14 @@ const idOf = (x: string | { id: string } | null | undefined) => (typeof x === 's
 async function setPremium(userId: string, value: boolean, customerId?: string) {
   const patch: Record<string, unknown> = { is_premium: value, updated_at: new Date().toISOString() };
   if (customerId) patch.stripe_customer_id = customerId; // potřebné pro zákaznický portál (zrušení předplatného)
-  const { error } = await adminClient().from('profiles').update(patch).eq('id', userId);
+  const db = adminClient();
+  const { data, error } = await db.from('profiles').update(patch).eq('id', userId).select('id');
   if (error) throw error;
+  // Uživatel zatím nemá řádek v profiles (např. chybí trigger při registraci) → založit ho, jinak by se VIP neaktivovalo
+  if (!data || data.length === 0) {
+    const { error: insErr } = await db.from('profiles').insert({ id: userId, ...patch });
+    if (insErr) throw insErr;
+  }
 }
 
 export async function POST(req: Request) {

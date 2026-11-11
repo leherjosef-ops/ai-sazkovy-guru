@@ -5,14 +5,15 @@ import Link from 'next/link';
 import AppHeader from '@/components/AppHeader';
 import MatchAnalysis, { ValueExplainer } from '@/components/MatchAnalysis';
 import StakeDialog from '@/components/StakeDialog';
-import { createClient } from '@supabase/supabase-js';
+import { supabase } from '@/lib/supabase';
+import Icon from '@/components/Icon';
+import { authFetch } from '@/lib/auth-fetch';
 import { toast } from '@/components/Toaster';
 import { T, tr, trTip, loc } from '@/lib/i18n';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
+
+// Typ sázky podle názvu tipu (názvy jsou uložené česky)
+const marketOf = (name: string) => (name.includes('gólů') ? 'Počet gólů' : name.includes('Oba týmy') ? 'Oba týmy skórují' : 'Výsledek zápasu');
 
 export default function TipsPage() {
   const activeSport = 'football' as const;
@@ -65,7 +66,7 @@ export default function TipsPage() {
           }
         }
 
-        const res = await fetch('/api/calculate-poisson');
+        const res = await authFetch('/api/calculate-poisson');
         if (!res.ok) {
           setFootballMatches([]);
           setLoadingFootball(false);
@@ -180,6 +181,8 @@ export default function TipsPage() {
   const bestValue = (m: any) => Math.max(-99, ...(m.tips || []).map((t: any) => (typeof t.value === 'string' ? parseFloat(t.value) : -99)));
   const bestChance = (m: any) => Math.max(0, ...(m.tips || []).map((t: any) => parseFloat(t.probability) || 0));
   const sortedMatches = [...filteredMatches].sort((a, b) => {
+    // bez VIP nejdřív odemčené zápasy zdarma, zamčené až za nimi
+    if (!isVip && Boolean(a.locked) !== Boolean(b.locked)) return a.locked ? 1 : -1;
     if (a.status === 'LIVE' && b.status !== 'LIVE') return -1;
     if (b.status === 'LIVE' && a.status !== 'LIVE') return 1;
     if (sortBy === 'value') return bestValue(b) - bestValue(a);
@@ -189,7 +192,7 @@ export default function TipsPage() {
 
   // Tipy s nejvyšším kladným value (jen z reálných kurzů a bez varování model ≠ trh)
   const topValue = filteredMatches
-    .flatMap((m: any) => (m.tips || []).map((t: any) => ({ m, t })))
+    .flatMap((m: any) => (m.allTips || m.tips || []).map((t: any) => ({ m, t })))
     .filter(({ t }: any) => t.oddsSource === 'bookmaker' && !t.gapWarning && !t.valueSuspicious && typeof t.value === 'string' && parseFloat(t.value) >= 2)
     .sort((a: any, b: any) => parseFloat(b.t.value) - parseFloat(a.t.value))
     .slice(0, 3);
@@ -205,7 +208,7 @@ export default function TipsPage() {
         {!isVip && (
           <div className="bg-gradient-to-r from-amber-950/40 via-[#14292a] to-amber-950/30 border border-amber-500/30 p-4 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xl">
             <div className="flex items-center gap-3">
-              <span className="text-2xl">🔒</span>
+              <Icon name="lock" className="w-6 h-6 text-amber-400" />
               <div>
                 <h4 className="text-sm font-bold text-white"><T>{`Free režim (Omezený přístup)`}</T></h4>
                 <p className="text-xs text-gray-300"><T>{`Vidíte pouze základní vzorek 3 předpovědí denně. Pro plný přístup ke všem zápasům, value analýzám a rozborům zápasů aktivujte VIP členství.`}</T></p>
@@ -218,7 +221,7 @@ export default function TipsPage() {
         )}
 
         <div className="flex flex-col lg:flex-row items-center justify-between gap-4 bg-[#14292a] border border-gray-800/80 p-3 rounded-2xl shadow-lg">
-          <span className="text-xs font-bold text-gray-200 px-2"><T>{`⚽ Fotbalové analýzy`}</T></span>
+          <span className="text-xs font-bold text-gray-200 px-2"><Icon name="ball" className="w-4 h-4 inline -mt-0.5 mr-1 text-amber-400" /><T>{`Fotbalové analýzy`}</T></span>
 
           <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto justify-end">
             <div className="flex items-center gap-1 bg-[#0a1715] p-1 rounded-xl border border-gray-800 overflow-x-auto max-w-full">
@@ -231,7 +234,7 @@ export default function TipsPage() {
             <div className="relative w-full sm:w-56">
               <input 
                 type="text"
-                placeholder={tr("🔍 Hledat tým...")}
+                placeholder={tr("Hledat tým...")}
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full bg-[#0a1715] border border-gray-800 rounded-xl px-3.5 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-amber-500 transition-all shadow-inner"
@@ -296,7 +299,7 @@ export default function TipsPage() {
         ) : (
           <div className="space-y-3">
             {sortedMatches.map((match, index) => {
-              const isLocked = !isVip && index >= 3;
+              const isLocked = !isVip && Boolean(match.locked);
 
               return (
                 <div 
@@ -307,7 +310,7 @@ export default function TipsPage() {
                   {isLocked && (
                     <div className="absolute inset-0 z-20 backdrop-blur-sm bg-black/40 rounded-2xl flex items-center justify-center p-4">
                       <div className="bg-[#14292a] border border-amber-500/40 p-4 rounded-xl text-center space-y-2 shadow-2xl max-w-sm">
-                        <span className="text-xl">🔒</span>
+                        <Icon name="lock" className="w-5 h-5 text-amber-400" />
                         <h5 className="text-xs font-bold text-white"><T>{`Zamčená předpověď`}</T></h5>
                         <p className="text-[10px] text-gray-300"><T>{`Tento a všechny další zápasy jsou dostupné pouze pro členy s předplatným VIP.`}</T></p>
                         <Link href="/" className="inline-block bg-amber-500 text-black text-[10px] font-black px-4 py-1.5 rounded-lg shadow">
@@ -325,7 +328,7 @@ export default function TipsPage() {
                         </span>
                         {match.status === 'LIVE' && (
                           <span className="bg-red-500/20 text-red-400 border border-red-500/40 text-[10px] font-black px-2 py-0.5 rounded">
-                            <T>{`🔴 LIVE`}</T>
+                            <span className="inline-block w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse mr-1 align-middle" />LIVE
                           </span>
                         )}
                       </div>
@@ -337,7 +340,7 @@ export default function TipsPage() {
                       </div>
 
                       <div className="text-[11px] text-gray-300 flex items-center gap-2 font-mono">
-                        <span>🕒 {match.match_date}</span>
+                        <span className="inline-flex items-center gap-1"><Icon name="clock" className="w-3.5 h-3.5" />{match.match_date}</span>
                         {match.score && (
                           <span className="text-amber-400 font-bold bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
                             Skóre: {match.score}
@@ -350,7 +353,7 @@ export default function TipsPage() {
                       onClick={() => !isLocked && setSelectedMatchModal(match)}
                       className="w-full bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 text-[11px] font-bold py-1.5 px-3 rounded-xl transition-all flex items-center justify-center gap-1.5 shadow-inner mt-1 cursor-pointer"
                     >
-                      <span>📊</span> <T>{`Rozbor zápasu`}</T>
+                      <Icon name="chart" className="w-3.5 h-3.5" /> <T>{`Rozbor zápasu`}</T>
                     </button>
                   </div>
 
@@ -360,68 +363,85 @@ export default function TipsPage() {
                       const isSaving = savingKey === uniqueKey;
 
                       return (
-                        <div 
-                          key={idx} 
-                          className={`p-3 rounded-xl border flex flex-col justify-between transition-all relative ${
-                            tip.isSureBet 
-                              ? 'bg-gradient-to-r from-amber-950/20 via-[#0a1715] to-[#0a1715] border-amber-500/40 shadow-inner' 
-                              : 'bg-[#0a1715] border-gray-800/80 hover:border-gray-700'
+                        <div
+                          key={idx}
+                          className={`p-3.5 rounded-xl border flex flex-col gap-2.5 transition-all ${
+                            tip.isSureBet ? 'bg-[#0a1715] border-amber-500/40 shadow-inner' : 'bg-[#0a1715] border-gray-800/80 hover:border-gray-700'
                           }`}
                         >
-                          <div className="flex items-center justify-between mb-1">
-                            {tip.isSureBet ? (
-                              <span className="bg-amber-500 text-black text-[9px] font-black px-1.5 py-0.2 rounded">
-                                <T>{`⭐ Vysoká šance`}</T>
-                              </span>
-                            ) : (
-                              <span className="text-[9px] text-gray-400 font-bold">
-                                {tr("Odhad")} #{idx + 1}
+                          {/* Typ sázky + odznak vysoké šance */}
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[10px] uppercase tracking-wider text-gray-400 font-bold">{tr(marketOf(tip.name))}</span>
+                            {tip.isSureBet && (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-300 bg-amber-500/10 border border-amber-500/30 px-1.5 py-0.5 rounded-md">
+                                <Icon name="star" className="w-3 h-3" /> <T>{`Vysoká šance`}</T>
                               </span>
                             )}
+                          </div>
 
-                            <div className="flex items-center gap-1">
-                              {tip.value && (
-                                <span
-                                  title={tip.valueSuspicious ? "Neobvykle vysoké value nebo odlehlý kurz jedné sázkovky. Nejspíš chyba v kurzu, před sázkou ho ověř." : "Value: průměrný zisk (+) nebo ztráta (−) na 100 Kč vsazených. Rozbor najdeš po kliknutí na zápas."}
-                                  className={`text-[10px] font-bold px-1.5 py-0.2 rounded border ${tip.value.startsWith('+') ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30' : 'text-red-400 bg-red-500/10 border-red-500/25'}`}
-                                >
-                                  {tr('Value')} {tip.value}{tip.valueSuspicious ? ' ⚠' : ''}
-                                </span>
-                              )}
-                              <span className="text-[10px] text-amber-400 font-bold bg-amber-500/10 px-1.5 py-0.2 rounded border border-amber-500/20">
-                                {tip.probability}
-                              </span>
+                          <div className="text-sm font-bold text-white leading-snug line-clamp-2">{trTip(tip.name)}</div>
+
+                          {/* Šance podle modelu jako pruh */}
+                          <div title={tr('Jak pravděpodobné je to podle našeho modelu. Není to záruka.')}>
+                            <div className="flex items-baseline justify-between text-[11px]">
+                              <span className="text-gray-400"><T>{`Šance podle modelu`}</T></span>
+                              <span className="font-black text-white font-mono text-sm">{tip.probability}</span>
+                            </div>
+                            <div className="h-1.5 bg-gray-800 rounded-full mt-1 overflow-hidden">
+                              <div className="h-full rounded-full bg-gradient-to-r from-teal-500 to-emerald-400" style={{ width: tip.probability }} />
                             </div>
                           </div>
 
-                          <div className="text-xs font-semibold text-gray-100 py-1 line-clamp-1">
-                            {trTip(tip.name)}
-                          </div>
-
-                          {tip.oddsList && tip.oddsList.length > 1 && (
-                            <div className="text-[10px] text-gray-400 pt-1 leading-snug" title={tr("Nabídka kurzů u jednotlivých sázkovek")}>
-                              {tip.oddsList.map((o: any) => `${o.book} ${o.price}`).join(' · ')}
+                          {/* Kurzy a value */}
+                          {tip.oddsSource === 'bookmaker' ? (
+                            <div className="space-y-1.5">
+                              <div className="flex items-center justify-between text-[11px]">
+                                <span className="text-gray-400"><T>{`Nejlepší kurz`}</T> <span className="text-gray-500">· {tip.bookmaker}</span></span>
+                                <span className="font-black text-amber-400 font-mono text-sm">{tip.bookmakerOdds}</span>
+                              </div>
+                              {tip.value && (
+                                <div
+                                  title={tip.valueSuspicious ? tr('Neobvykle vysoké value nebo odlehlý kurz jedné sázkovky. Nejspíš chyba v kurzu, před sázkou ho ověř.') : tr('Value: průměrný zisk (+) nebo ztráta (−) na 100 Kč vsazených. Rozbor najdeš po kliknutí na zápas.')}
+                                  className={`flex items-center justify-between text-[11px] rounded-lg px-2 py-1 border ${
+                                    tip.valueSuspicious ? 'bg-amber-500/10 border-amber-500/30 text-amber-200'
+                                    : tip.value.startsWith('+') ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                                    : 'bg-gray-800/40 border-gray-800 text-gray-400'}`}
+                                >
+                                  <span className="inline-flex items-center gap-1">
+                                    <Icon name={tip.valueSuspicious ? 'alert' : 'trend'} className="w-3.5 h-3.5" />
+                                    {tip.valueSuspicious ? tr('Podezřelý kurz, ověř ho') : tip.value.startsWith('+') ? tr('Kurz je výhodnější než odhad') : tr('Kurz je horší než odhad')}
+                                  </span>
+                                  <b className="font-mono">{tip.value}</b>
+                                </div>
+                              )}
+                              {tip.gapWarning && (
+                                <div title={`${tr('Trh')} ${tip.marketProbability}, ${tr('model')} ${tip.probability}`} className="flex items-center gap-1 text-[10px] text-red-300">
+                                  <Icon name="alert" className="w-3 h-3" /> <T>{`Model a sázkovky se výrazně liší`}</T>
+                                </div>
+                              )}
+                              {tip.oddsList && tip.oddsList.length > 1 && (
+                                <div className="text-[10px] text-gray-500 leading-snug" title={tr('Nabídka kurzů u jednotlivých sázkovek')}>
+                                  {tip.oddsList.map((o: any) => `${o.book} ${o.price}`).join(' · ')}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="space-y-1">
+                              <div className="flex items-center justify-between text-[11px]" title={tr('Kurz, při kterém by sázka podle modelu dlouhodobě nevydělávala ani neprodělávala. Pokud sázkovka nabízí víc, je to pro tebe výhodné.')}>
+                                <span className="text-gray-400 inline-flex items-center gap-1"><T>{`Férový kurz`}</T> <Icon name="info" className="w-3 h-3 text-gray-500" /></span>
+                                <span className="font-black text-gray-200 font-mono text-sm">{tip.bookmakerOdds}</span>
+                              </div>
+                              <div className="text-[10px] text-gray-500"><T>{`Kurz sázkovek pro tento typ sázky nemáme.`}</T></div>
                             </div>
                           )}
-                          <div className="flex items-center justify-between pt-2 border-t border-gray-800/60 mt-1">
-                            <div className="flex items-baseline gap-1">
-                              <span className="text-[10px] text-gray-400">
-                                {tip.oddsSource === 'bookmaker' ? `${tr('Kurz')} (${tip.bookmaker}):` : tr('Kurz modelu:')}
-                              </span>
-                              <span className="text-xs font-black text-amber-400 font-mono">{tip.bookmakerOdds}</span>
-                              {tip.gapWarning && (
-                                <span title={`Trh dává ${tip.marketProbability}, model ${tip.probability}`} className="text-[10px] text-red-400 font-bold"><T>{`⚠ model ≠ trh`}</T></span>
-                              )}
-                            </div>
 
-                            <button
-                              onClick={() => handleSaveTicket(match, tip)}
-                              disabled={isSaving}
-                              className="bg-gray-800 hover:bg-amber-500 hover:text-black active:scale-95 text-white text-[10px] font-bold px-2.5 py-1 rounded-lg transition-all disabled:opacity-50 flex items-center gap-1 shadow-sm cursor-pointer"
-                            >
-                              <span>{isSaving ? '⏳' : '📥'}</span> {isSaving ? '...' : tr('Uložit')}
-                            </button>
-                          </div>
+                          <button
+                            onClick={() => handleSaveTicket(match, tip)}
+                            disabled={isSaving}
+                            className="mt-auto w-full inline-flex items-center justify-center gap-1.5 bg-gray-800/80 hover:bg-amber-500 hover:text-black active:scale-[0.98] text-gray-100 text-[11px] font-bold py-1.5 rounded-lg transition-all disabled:opacity-50 cursor-pointer"
+                          >
+                            <Icon name={isSaving ? 'spinner' : 'bookmark'} className="w-3.5 h-3.5" /> {isSaving ? tr('Ukládám…') : tr('Uložit na tiket')}
+                          </button>
                         </div>
                       );
                     })}
@@ -454,7 +474,7 @@ export default function TipsPage() {
             <div className="bg-[#0a1715] border-b border-gray-800 p-6 flex items-center justify-between">
               <div className="flex items-center gap-3.5">
                 <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-amber-500/20 to-yellow-500/10 border border-amber-500/40 flex items-center justify-center text-xl shadow-inner">
-                  📊
+                  <Icon name="chart" className="w-6 h-6 text-amber-400" />
                 </div>
                 <div>
                   <div className="flex items-center gap-2">
@@ -462,7 +482,7 @@ export default function TipsPage() {
                       {selectedMatchModal.league}
                     </span>
                     <span className="text-[10px] text-gray-300 font-mono">
-                      🕒 {selectedMatchModal.match_date}
+                      <Icon name="clock" className="w-3.5 h-3.5 inline -mt-0.5" /> {selectedMatchModal.match_date}
                     </span>
                   </div>
                   <h3 className="text-xl font-black text-white mt-0.5">
@@ -496,7 +516,7 @@ export default function TipsPage() {
                           <span className="text-xs font-bold text-white">{trTip(t.name)}</span>
                           {t.isSureBet && (
                             <span className="bg-amber-500 text-black text-[9px] font-black px-1.5 py-0.2 rounded">
-                              <T>{`⭐ Vysoká šance`}</T>
+                              <Icon name="star" className="w-3 h-3 inline -mt-0.5" /> <T>{`Vysoká šance`}</T>
                             </span>
                           )}
                         </div>

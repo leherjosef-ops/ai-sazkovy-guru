@@ -3,20 +3,26 @@ export type TipResult = 'WON' | 'LOST' | 'VOID';
 
 export function evaluateTip(tipName: string, homeGoals: number, awayGoals: number): TipResult {
   const name = tipName || '';
+  const h = homeGoals, a = awayGoals;
 
   // Rohy nemáme z čeho vyhodnotit (API nevrací počet rohů) → neplatný tip
   if (name.includes('rohů')) return 'VOID';
 
-  if (name.includes('Oba týmy dají gól')) {
-    return homeGoals > 0 && awayGoals > 0 ? 'WON' : 'LOST';
+  const won = (x: boolean): TipResult => (x ? 'WON' : 'LOST');
+  if (name.includes('(1X)')) return won(h >= a);
+  if (name.includes('(X2)')) return won(h <= a);
+  if (name.includes('(12)')) return won(h !== a);
+  if (name === 'Remíza') return won(h === a);
+  if (name.includes('Oba týmy dají gól (NE)')) return won(!(h > 0 && a > 0));
+  if (name.includes('Oba týmy dají gól')) return won(h > 0 && a > 0);
+
+  const goals = name.match(/(Více|Méně) než (\d+(?:[.,]\d+)?) gólů/);
+  if (goals) {
+    const line = parseFloat(goals[2].replace(',', '.'));
+    return won(goals[1] === 'Více' ? h + a > line : h + a < line);
   }
-  if (name.includes('Více než 2.5 gólů')) {
-    return homeGoals + awayGoals >= 3 ? 'WON' : 'LOST';
-  }
-  if (name.startsWith('Výhra')) {
-    // Tip je vždy ve tvaru "Výhra <domácí tým>"
-    return homeGoals > awayGoals ? 'WON' : 'LOST';
-  }
+  if (name.startsWith('Výhra') && name.endsWith('(hosté)')) return won(a > h);
+  if (name.startsWith('Výhra')) return won(h > a); // "Výhra <domácí tým>"
   return 'VOID';
 }
 

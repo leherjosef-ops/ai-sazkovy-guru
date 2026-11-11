@@ -3,15 +3,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import AppHeader from '@/components/AppHeader';
-import { createClient } from '@supabase/supabase-js';
+import { supabase } from '@/lib/supabase';
 import { ticketProfit } from '@/lib/settle';
 import { toast } from '@/components/Toaster';
 import { T, tr, trTip, loc } from '@/lib/i18n';
+import Icon from '@/components/Icon';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
 
 const STAKE = 100; // modelová sázka na tiket v Kč (jen pro výpočet statistik)
 const fmt = (d?: string) => (d ? new Date(d).toLocaleDateString(loc(), { day: 'numeric', month: 'numeric', year: 'numeric' }) : '–');
@@ -220,7 +217,7 @@ export default function ProfilePage() {
             <div className="bg-[#14292a] border border-gray-800/80 p-8 rounded-3xl shadow-xl space-y-8">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-gray-800 pb-6">
                 <div className="flex items-center gap-4">
-                  <div className="w-14 h-14 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-2xl shadow-inner">👤</div>
+                  <div className="w-14 h-14 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center shadow-inner text-amber-400"><Icon name="user" className="w-7 h-7" /></div>
                   <div>
                     <h1 className="text-2xl font-black text-white"><T>{`Uživatelský profil ApexOdds`}</T></h1>
                     <p className="text-xs text-gray-300 mt-0.5"><T>{`Účet, členství a přehled tvých tiketů`}</T></p>

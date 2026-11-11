@@ -5,14 +5,12 @@ import Link from 'next/link';
 import AppHeader from '@/components/AppHeader';
 import MatchAnalysis, { ValueExplainer } from '@/components/MatchAnalysis';
 import StakeDialog from '@/components/StakeDialog';
-import { createClient } from '@supabase/supabase-js';
+import { supabase } from '@/lib/supabase';
+import { authFetch } from '@/lib/auth-fetch';
 import { toast } from '@/components/Toaster';
 import { T, tr, trTip } from '@/lib/i18n';
+import Icon from '@/components/Icon';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
 
 export default function GeneratorPage() {
   const [user, setUser] = useState<any>(null);
@@ -67,7 +65,7 @@ export default function GeneratorPage() {
     setGeneratedTicket(null);
 
     try {
-      const res = await fetch('/api/calculate-poisson');
+      const res = await authFetch('/api/calculate-poisson');
       const json = await res.json();
 
       if (!json.success || !json.data || json.data.length === 0) {
@@ -78,7 +76,7 @@ export default function GeneratorPage() {
 
       const allTips: any[] = [];
       json.data.forEach((match: any) => {
-        match.tips.forEach((tip: any) => {
+        (match.allTips ?? match.tips).forEach((tip: any) => {
           allTips.push({
             match: `${match.home_team} vs ${match.away_team}`,
             league: match.league,
@@ -97,7 +95,7 @@ export default function GeneratorPage() {
         return;
       }
 
-      const hasRealOdds = json.data.some((m: any) => m.tips?.some((t: any) => t.oddsSource === 'bookmaker'));
+      const hasRealOdds = json.data.some((m: any) => (m.allTips ?? m.tips)?.some((t: any) => t.oddsSource === 'bookmaker'));
 
       // 🧠 CHYTRÝ ALGORITMUS PRO VÝBĚR PODLE CÍLOVÉHO KURZU
       let bestCombination: any[] = [];
@@ -111,11 +109,11 @@ export default function GeneratorPage() {
         for (const match of shuffledMatches) {
           if (currentCombo.length >= matchesCount) break;
           const matchKey = `${match.home_team} vs ${match.away_team}`;
-          if (usedMatches.has(matchKey) || !match.tips || match.tips.length === 0) continue;
+          if (usedMatches.has(matchKey) || !(match.allTips ?? match.tips) || (match.allTips ?? match.tips).length === 0) continue;
 
           // Kurzy sázkovek mají přednost – modelové kurzy se do tiketu nemíchají, pokud jsou k dispozici reálné
-          const realTips = match.tips.filter((t: any) => t.oddsSource === 'bookmaker');
-          const pool = hasRealOdds ? realTips : match.tips;
+          const realTips = (match.allTips ?? match.tips).filter((t: any) => t.oddsSource === 'bookmaker');
+          const pool = hasRealOdds ? realTips : (match.allTips ?? match.tips);
           if (pool.length === 0) continue;
           const randomTip = pool[Math.floor(Math.random() * pool.length)];
           
@@ -209,7 +207,7 @@ export default function GeneratorPage() {
         {!isVip ? (
           <div className="bg-[#14292a] border border-amber-500/40 rounded-3xl p-12 text-center max-w-xl mx-auto my-16 space-y-6 shadow-2xl">
             <div className="w-16 h-16 mx-auto rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-3xl shadow-inner">
-              ⚡
+              <Icon name="sparkles" className="w-7 h-7 text-amber-400" />
             </div>
             <div className="space-y-3">
               <span className="bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-black px-3 py-1 rounded-full">
@@ -231,7 +229,7 @@ export default function GeneratorPage() {
           <div className="bg-[#14292a] border border-gray-800/80 p-8 rounded-3xl shadow-xl space-y-6">
             <div className="flex items-center gap-4">
               <div className="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-2xl shadow-inner">
-                ⚡
+                <Icon name="sparkles" className="w-7 h-7 text-amber-400" />
               </div>
               <div>
                 <h1 className="text-2xl font-black text-white"><T>{`Generátor tiketů`}</T></h1>
@@ -275,7 +273,7 @@ export default function GeneratorPage() {
                 disabled={isGenerating}
                 className="w-full bg-gradient-to-r from-amber-500 to-yellow-600 hover:from-amber-400 hover:to-yellow-500 text-black text-xs font-black py-3 rounded-xl transition-all shadow-lg shadow-amber-950/40 disabled:opacity-50 cursor-pointer"
               >
-                {isGenerating ? tr('Generuji optimální tiket...') : tr('⚡ Vygenerovat tiket podle kurzů')}
+                {isGenerating ? tr('Generuji optimální tiket...') : tr('Vygenerovat tiket podle kurzů')}
               </button>
             </div>
 
@@ -299,7 +297,7 @@ export default function GeneratorPage() {
                         <div className="text-[11px] text-gray-300 font-medium flex items-center gap-2">
                           <span className="text-amber-400 font-bold">{item.league}</span>
                           <span>•</span>
-                          <span>🕒 {item.date}</span>
+                          <span className="inline-flex items-center gap-1"><Icon name="clock" className="w-3.5 h-3.5" />{item.date}</span>
                         </div>
                         <div className="text-sm font-bold text-white">{item.match}</div>
                         <div className="text-xs text-amber-300 font-semibold">{tr("Odhad")}: {trTip(item.tip)}</div>
@@ -317,7 +315,7 @@ export default function GeneratorPage() {
                           onClick={() => setSelectedMatchModal(item)}
                           className="bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 text-[11px] font-bold py-2 px-3 rounded-xl transition-all flex items-center gap-1.5 shadow-inner cursor-pointer"
                         >
-                          <span>📊</span> <T>{`Analýza`}</T>
+                          <Icon name="chart" className="w-3.5 h-3.5" /> <T>{`Analýza`}</T>
                         </button>
                       </div>
                     </div>
@@ -327,7 +325,7 @@ export default function GeneratorPage() {
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-3 border-t border-gray-800/80">
                   <p className="text-[11px] text-gray-400"><T>{`Akumulátor vyhraje jen tehdy, když vyjdou všechny zápasy. Šance na to je výrazně menší než u jednotlivého tipu.`}</T></p>
                   <button onClick={() => (isVip ? setAskStake(true) : toast(tr('Ukládání tiketů je dostupné pro členy VIP.')))} className="bg-amber-500 hover:bg-amber-400 text-black text-xs font-black px-5 py-2.5 rounded-xl cursor-pointer whitespace-nowrap">
-                    <T>{`📥 Uložit celý tiket`}</T>
+                    <Icon name="bookmark" className="w-4 h-4 inline -mt-0.5" /> <T>{`Uložit celý tiket`}</T>
                   </button>
                 </div>
                 {savedMsg && <p className="text-xs text-emerald-300">{savedMsg}</p>}
@@ -350,7 +348,7 @@ export default function GeneratorPage() {
             <div className="bg-[#0a1715] border-b border-gray-800 p-6 flex items-center justify-between">
               <div className="flex items-center gap-3.5">
                 <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-amber-500/20 to-yellow-500/10 border border-amber-500/40 flex items-center justify-center text-xl shadow-inner">
-                  📊
+                  <Icon name="chart" className="w-6 h-6 text-amber-400" />
                 </div>
                 <div>
                   <div className="flex items-center gap-2">
@@ -358,7 +356,7 @@ export default function GeneratorPage() {
                       {selectedMatchModal.league}
                     </span>
                     <span className="text-[10px] text-gray-300 font-mono">
-                      🕒 {selectedMatchModal.date}
+                      <Icon name="clock" className="w-3.5 h-3.5 inline -mt-0.5" /> {selectedMatchModal.date}
                     </span>
                   </div>
                   <h3 className="text-xl font-black text-white mt-0.5">
@@ -387,38 +385,11 @@ export default function GeneratorPage() {
                 </h4>
                 <div className="bg-[#0a1715] border border-gray-800 p-4 rounded-xl flex items-center justify-between">
                   <div>
-                    <div className="text-xs font-bold text-white">{selectedMatchModal.tip}</div>
+                    <div className="text-xs font-bold text-white">{trTip(selectedMatchModal.tip)}</div>
                     <div className="text-[10px] text-gray-300 mt-0.5"><T>{`Modelová šance:`}</T> <span className="text-amber-400 font-bold">{selectedMatchModal.probability}</span></div>
                   </div>
                   <div className="text-right">
                     <span className="text-xs font-mono font-black text-amber-400 bg-amber-500/10 border border-amber-500/30 px-3 py-1.5 rounded-lg">@{selectedMatchModal.odds}</span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="bg-[#0a1715] border border-gray-800/80 p-5 rounded-2xl space-y-3">
-                <h4 className="text-xs font-bold text-amber-400 flex items-center gap-2">
-                  <span>🔥</span> Alternativní & Extra sázky (Vyšší ziskovost)
-                </h4>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div className="bg-[#14292a] p-3 rounded-xl border border-gray-800/80 flex items-center justify-between">
-                    <div>
-                      <span className="text-[10px] text-gray-400 block font-semibold"><T>{`Rohové kopy`}</T></span>
-                      <span className="text-xs font-bold text-white"><T>{`Více než 9.5`}</T></span>
-                    </div>
-                    <span className="text-xs font-mono font-bold text-amber-400 bg-amber-500/10 px-2.5 py-1 rounded-lg border border-amber-500/20">
-                      @1.92
-                    </span>
-                  </div>
-
-                  <div className="bg-[#14292a] p-3 rounded-xl border border-gray-800/80 flex items-center justify-between">
-                    <div>
-                      <span className="text-[10px] text-gray-400 block font-semibold"><T>{`První poločas`}</T></span>
-                      <span className="text-xs font-bold text-white"><T>{`Gól v 1. půli`}</T></span>
-                    </div>
-                    <span className="text-xs font-mono font-bold text-amber-400 bg-amber-500/10 px-2.5 py-1 rounded-lg border border-amber-500/20">
-                      @1.45
-                    </span>
                   </div>
                 </div>
               </div>

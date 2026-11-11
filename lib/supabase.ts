@@ -1,16 +1,9 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+// Jeden sdílený klient pro celý prohlížeč. Víc klientů nad stejným úložištěm přihlášení
+// způsobuje varování „Multiple GoTrueClient instances" a může rozbít přihlášení.
+const globalForSupabase = globalThis as unknown as { __apexSupabase?: SupabaseClient<any> };
 
-// Singleton pattern pro zabránění vícenásobné inicializace klienta při vývoji
-const globalForSupabase = globalThis as unknown as {
-  supabase: ReturnType<typeof createClient>;
-};
-
-export const supabase =
-  globalForSupabase.supabase || createClient(supabaseUrl, supabaseAnonKey);
-
-if (process.env.NODE_ENV !== 'production') {
-  globalForSupabase.supabase = supabase;
-}
+export const supabase: SupabaseClient<any> =
+  globalForSupabase.__apexSupabase ??
+  (globalForSupabase.__apexSupabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!));

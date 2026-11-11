@@ -3,14 +3,15 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { tr } from '@/lib/i18n';
+import Icon from '@/components/Icon';
 
-const ITEMS = [
-  { href: '/', label: 'Domů', icon: '🏠' },
-  { href: '/tips', label: 'Zápasy', icon: '⚽' },
-  { href: '/risk-bombs', label: 'Bomby', icon: '💣' },
-  { href: '/generator', label: 'Generátor', icon: '⚡' },
-  { href: '/history', label: 'Historie', icon: '📊' },
-  { href: '/profile', label: 'Profil', icon: '👤' },
+const ITEMS: { href: string; label: string; icon: Parameters<typeof Icon>[0]['name'] }[] = [
+  { href: '/', label: 'Domů', icon: 'home' },
+  { href: '/tips', label: 'Zápasy', icon: 'ball' },
+  { href: '/risk-bombs', label: 'Bomby', icon: 'flame' },
+  { href: '/generator', label: 'Generátor', icon: 'sparkles' },
+  { href: '/history', label: 'Historie', icon: 'history' },
+  { href: '/profile', label: 'Profil', icon: 'user' },
 ];
 
 // Na telefonu horní navigace není, proto spodní lišta.
@@ -25,7 +26,7 @@ export default function MobileNav() {
             <li key={i.href}>
               <Link href={i.href} aria-current={active ? 'page' : undefined}
                 className={`flex flex-col items-center gap-0.5 py-2 text-[10px] font-semibold transition-colors ${active ? 'text-amber-400' : 'text-gray-400 active:text-white'}`}>
-                <span className={`text-base leading-none px-3 py-1 rounded-full ${active ? 'bg-amber-500/15' : ''}`}>{i.icon}</span>
+                <span className={`px-3 py-1 rounded-full ${active ? 'bg-amber-500/15' : ''}`}><Icon name={i.icon} className="w-5 h-5" /></span>
                 {tr(i.label)}
               </Link>
             </li>

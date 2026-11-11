@@ -56,3 +56,13 @@ test('odstranění marže: tržní šance dají součet 1 a vrátí se nejlepš�
   assert.equal(r.home.best, 2.1); assert.equal(r.home.bestBook, 'B');
   assert.deepEqual(r.home.all.map((o) => o.book), ['B', 'A']);
 });
+
+test('burza (exchange) se počítá do šance trhu, ale nenabízí se jako nejlepší kurz', () => {
+  const mk = (key, x, d, y) => ({ key, title: key, markets: [{ key: 'h2h', outcomes: [{ name: 'X', price: x }, { name: 'Draw', price: d }, { name: 'Y', price: y }] }] });
+  const pick = (o) => (o.name === 'Draw' ? 'draw' : o.name === 'X' ? 'home' : 'away');
+  const r = aggregate([mk('book_a', 2.0, 3.5, 4.0), mk('betfair_ex_eu', 11, 3.6, 4.2)], 'h2h', ['home', 'draw', 'away'], pick);
+  assert.equal(r.home.best, 2.0);
+  assert.equal(r.home.bestBook, 'book_a');
+  assert.ok(!r.home.all.some((o) => o.book === 'betfair_ex_eu'));
+  assert.equal(aggregate([mk('betfair_ex_eu', 2, 3.5, 4)], 'h2h', ['home', 'draw', 'away'], pick), null);
+});

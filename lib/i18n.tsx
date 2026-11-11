@@ -71,8 +71,16 @@ export const loc = () => (current === 'en' ? 'en-GB' : 'cs-CZ');
 // Názvy tipů se ukládají česky (podle nich se tikety vyhodnocují), takže se překládají jen při zobrazení.
 export function trTip(name: string) {
   if (current !== 'en' || !name) return name;
-  if (name.startsWith('Výhra ')) return 'Win ' + name.slice(6);
-  if (name === 'Celkem gólů: Více než 2.5 gólů') return 'Total goals: Over 2.5';
+  const goals = name.match(/^Celkem gólů: (Více|Méně) než ([\d.]+) gólů$/);
+  if (goals) return `Total goals: ${goals[1] === 'Více' ? 'Over' : 'Under'} ${goals[2]}`;
   if (name === 'Oba týmy dají gól (ANO)') return 'Both teams to score (YES)';
+  if (name === 'Oba týmy dají gól (NE)') return 'Both teams to score (NO)';
+  if (name === 'Remíza') return 'Draw';
+  if (name === 'Nebude remíza (12)') return 'No draw (12)';
+  let m = name.match(/^(.*) neprohraje \((1X|X2)\)$/);
+  if (m) return `${m[1]} not to lose (${m[2]})`;
+  m = name.match(/^Výhra (.*) \(hosté\)$/);
+  if (m) return `Win ${m[1]} (away)`;
+  if (name.startsWith('Výhra ')) return 'Win ' + name.slice(6);
   return name;
 }

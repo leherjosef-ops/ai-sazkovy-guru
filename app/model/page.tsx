@@ -8,8 +8,8 @@ import { T, tr, loc } from '@/lib/i18n';
 const pc = (x: number, d = 1) => `${(x * 100).toFixed(d)} %`;
 const NAMES: Record<string, string> = { PL: 'Premier League', PD: 'La Liga', SA: 'Serie A', BL1: 'Bundesliga', FL1: 'Ligue 1', CL: 'Liga mistrů', DED: 'Eredivisie', PPL: 'Primeira Liga', BSA: 'Brazílie Série A', ELC: 'Championship' };
 
-function Metric({ label, hint, full, basic, base, lower }: { label: string; hint: string; full: number; basic: number; base: number; lower?: boolean }) {
-  const rows = [[tr('Základní model'), basic], [tr('Vylepšený model'), full], [tr('Naivní odhad'), base]] as [string, number][];
+function Metric({ label, hint, full, basic, mle, base, lower }: { label: string; hint: string; full: number; basic: number; mle?: number; base: number; lower?: boolean }) {
+  const rows = ([[tr('Základní model'), basic], [tr('Vylepšený model'), full], ...(mle !== undefined ? [[tr('Nový model (síla soupeřů)'), mle]] : []), [tr('Naivní odhad'), base]] as [string, number][]);
   const vals = rows.map((r) => r[1]);
   const lo = Math.min(...vals), hi = Math.max(...vals);
   const best = lower ? lo : hi;
@@ -70,7 +70,8 @@ export default function ModelPage() {
   }, []);
 
   const t = d?.total;
-  const beats = t && t.full.logLoss < t.baseline.logLoss;
+  const act = t ? (t[d.active] ?? t.basic) : null;
+  const beats = t && act.logLoss < t.baseline.logLoss;
 
   return (
     <div className="min-h-screen bg-[#0c1c19] text-slate-100">
@@ -95,13 +96,42 @@ export default function ModelPage() {
                 : <>{tr('Na')} {t.n.toLocaleString(loc())} {tr('ověřených zápasech model nepřekonal naivní odhad. Jeho šance proto neber jako užitečný signál.')}</>}
             </div>
 
-            <p className="text-[11px] text-gray-400"><T>{`Aplikace teď používá:`}</T> <b className="text-gray-200">{d.active === 'full' ? tr('vylepšený model') : tr('základní model')}</b><T>{`. Délka sloupce ukazuje pořadí, přesná čísla jsou vpravo. Rozdíl mezi základním a vylepšeným modelem je malý a při takhle málo zápasech může být náhoda.`}</T></p>
+            <p className="text-[11px] text-gray-400"><T>{`Aplikace teď používá:`}</T> <b className="text-gray-200">{d.active === 'full' ? tr('vylepšený model') : d.active === 'mle' ? tr('nový model (síla soupeřů)') : tr('základní model')}</b><T>{`. Délka sloupce ukazuje pořadí, přesná čísla jsou vpravo. Rozdíl mezi základním a vylepšeným modelem je malý a při takhle málo zápasech může být náhoda.`}</T></p>
 
             <div className="grid md:grid-cols-3 gap-4">
-              <Metric label={tr("Trefa výsledku")} hint={tr("Jak často nejpravděpodobnější výsledek (výhra domácích, remíza, výhra hostů) skutečně nastal. Vyšší je lepší.")} full={t.full.accuracy} basic={t.basic.accuracy} base={t.baseline.accuracy} />
-              <Metric lower label={tr("Brierovo skóre")} hint={tr("Trestá špatně odhadnuté šance, i když tip vyšel. Nižší je lepší.")} full={t.full.brier} basic={t.basic.brier} base={t.baseline.brier} />
-              <Metric lower label="Log-loss" hint={tr("Trestá hlavně sebejisté chyby. Nižší je lepší. Nejpřísnější z měřítek.")} full={t.full.logLoss} basic={t.basic.logLoss} base={t.baseline.logLoss} />
+              <Metric label={tr("Trefa výsledku")} hint={tr("Jak často nejpravděpodobnější výsledek (výhra domácích, remíza, výhra hostů) skutečně nastal. Vyšší je lepší.")} full={t.full.accuracy} basic={t.basic.accuracy} mle={t.mle?.accuracy} base={t.baseline.accuracy} />
+              <Metric lower label={tr("Brierovo skóre")} hint={tr("Trestá špatně odhadnuté šance, i když tip vyšel. Nižší je lepší.")} full={t.full.brier} basic={t.basic.brier} mle={t.mle?.brier} base={t.baseline.brier} />
+              <Metric lower label="Log-loss" hint={tr("Trestá hlavně sebejisté chyby. Nižší je lepší. Nejpřísnější z měřítek.")} full={t.full.logLoss} basic={t.basic.logLoss} mle={t.mle?.logLoss} base={t.baseline.logLoss} />
             </div>
+
+            {d.picks && d.picks.matches > 0 && (
+              <div className="bg-[#0a1715] border border-gray-800/80 p-5 rounded-2xl space-y-4">
+                <div>
+                  <h3 className="text-sm font-bold text-white"><T>{`Úspěšnost vybraných tipů`}</T></h3>
+                  <p className="text-[11px] text-gray-400 leading-snug mt-0.5">
+                    <T>{`U každého ověřeného zápasu jsme vybrali tipy stejně jako na webu (nejvyšší šance, kurz aspoň 1,30) a podívali se, jestli vyšly.`}</T>
+                  </p>
+                </div>
+                <div className="grid sm:grid-cols-2 gap-3">
+                  {[['Tip č. 1 u zápasu', d.picks.top], ['Všechny vybrané tipy', d.picks.all]].map(([label, x]: any) => (
+                    <div key={label} className="bg-[#14292a] border border-gray-800 rounded-xl p-4">
+                      <div className="text-[11px] text-gray-400 font-semibold">{tr(label)}</div>
+                      <div className="text-3xl font-black text-emerald-300 font-mono mt-1">{pc(x.hitRate, 0)}</div>
+                      <div className="h-1.5 bg-gray-800 rounded-full mt-2 overflow-hidden">
+                        <div className="h-full bg-gradient-to-r from-teal-500 to-emerald-400 rounded-full" style={{ width: `${x.hitRate * 100}%` }} />
+                      </div>
+                      <div className="text-[11px] text-gray-400 mt-2 space-y-0.5">
+                        <div>{tr('Model čekal')} <b className="text-gray-200">{pc(x.expected, 0)}</b> · {tr('průměrný kurz')} <b className="text-gray-200 font-mono">{x.avgOdds.toFixed(2)}</b></div>
+                        <div>{x.n.toLocaleString(loc())} {tr('tipů')}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[11px] text-gray-400 leading-snug">
+                  <T>{`Vysoká úspěšnost u nízkých kurzů neznamená zisk. Když tip s kurzem 1,40 vyjde v 70 % případů, je to zhruba nula, a sázkovky navíc nabízejí kurzy o svou marži nižší.`}</T>
+                </p>
+              </div>
+            )}
 
             <div className="bg-[#0a1715] border border-gray-800/80 p-5 rounded-2xl space-y-3">
               <div>
@@ -125,9 +155,9 @@ export default function ModelPage() {
                       <tr key={l.code} className="text-gray-200">
                         <td className="py-1.5 pr-3 font-semibold text-white">{tr(NAMES[l.code] || l.code)}</td>
                         <td className="pr-3 font-mono">{l.n}</td>
-                        <td className="pr-3 font-mono">{pc(l.full.accuracy, 0)}</td>
+                        <td className="pr-3 font-mono">{pc((l.model ?? l.full).accuracy, 0)}</td>
                         <td className="pr-3 font-mono">{pc(l.baseline.accuracy, 0)}</td>
-                        <td className={`font-mono ${l.full.logLoss < l.baseline.logLoss ? 'text-emerald-300' : 'text-red-400'}`}>{l.full.logLoss.toFixed(3)} / {l.baseline.logLoss.toFixed(3)}</td>
+                        <td className={`font-mono ${(l.model ?? l.full).logLoss < l.baseline.logLoss ? 'text-emerald-300' : 'text-red-400'}`}>{(l.model ?? l.full).logLoss.toFixed(3)} / {l.baseline.logLoss.toFixed(3)}</td>
                       </tr>
                     ))}
                   </tbody>

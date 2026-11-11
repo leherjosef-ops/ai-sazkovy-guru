@@ -8,7 +8,7 @@ const OUT = new URL('../.test-build/', import.meta.url);
 rmSync(OUT, { recursive: true, force: true });
 mkdirSync(OUT, { recursive: true });
 
-for (const f of ['poisson.ts', 'backtest.ts', 'settle.ts', 'odds.ts']) {
+for (const f of ['poisson.ts', 'backtest.ts', 'settle.ts', 'odds.ts', 'markets.ts']) {
   const code = readFileSync(new URL(f, SRC), 'utf8').replace(/from '(\.\/[^']+)'/g, (m, p) => (p.endsWith('.ts') ? m : `from '${p}.ts'`));
   writeFileSync(new URL(f, OUT), code);
 }

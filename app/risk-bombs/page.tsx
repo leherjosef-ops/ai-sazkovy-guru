@@ -3,16 +3,14 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import AppHeader from '@/components/AppHeader';
-import { createClient } from '@supabase/supabase-js';
+import { supabase } from '@/lib/supabase';
+import { authFetch } from '@/lib/auth-fetch';
 import MatchAnalysis, { ValueExplainer } from '@/components/MatchAnalysis';
 import StakeDialog from '@/components/StakeDialog';
 import { toast } from '@/components/Toaster';
 import { T, tr, trTip, loc } from '@/lib/i18n';
+import Icon from '@/components/Icon';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
 
 export default function RiskBombsPage() {
   const activeSport = 'football' as const;
@@ -62,7 +60,7 @@ export default function RiskBombsPage() {
           }
         }
 
-        const res = await fetch('/api/calculate-poisson');
+        const res = await authFetch('/api/calculate-poisson');
         if (!res.ok) {
           setFootballMatches([]);
           setLoadingFootball(false);
@@ -135,7 +133,7 @@ export default function RiskBombsPage() {
   const isLoading = loadingFootball;
 
   const filteredMatches = currentMatches.filter((match) => {
-    const hasBombTip = match.tips?.some((t: any) => parseFloat(t.bookmakerOdds) >= 1.90);
+    const hasBombTip = (match.allTips ?? match.tips)?.some((t: any) => parseFloat(t.bookmakerOdds) >= 1.90);
     if (!hasBombTip) return false;
 
     const leagueLower = (match.league || '').toLowerCase();
@@ -174,7 +172,7 @@ export default function RiskBombsPage() {
         {!isVip ? (
           <div className="bg-[#14292a] border border-amber-500/40 rounded-3xl p-12 text-center max-w-xl mx-auto my-16 space-y-6 shadow-2xl">
             <div className="w-16 h-16 mx-auto rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-3xl shadow-inner">
-              💣
+              <Icon name="flame" className="w-7 h-7 text-amber-400" />
             </div>
             <div className="space-y-3">
               <span className="bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-black px-3 py-1 rounded-full">
@@ -202,7 +200,7 @@ export default function RiskBombsPage() {
             </div>
 
             <div className="flex flex-col lg:flex-row items-center justify-between gap-4 bg-[#14292a] border border-gray-800/80 p-3 rounded-2xl shadow-lg">
-              <span className="text-xs font-bold text-gray-200 px-2"><T>{`⚽ Fotbalové 1.9+`}</T></span>
+              <span className="text-xs font-bold text-gray-200 px-2"><Icon name="ball" className="w-4 h-4 inline -mt-0.5 mr-1 text-amber-400" /><T>{`Fotbalové 1.9+`}</T></span>
 
               <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto justify-end">
                 <div className="flex items-center gap-1 bg-[#0a1715] p-1 rounded-xl border border-gray-800 overflow-x-auto max-w-full">
@@ -214,7 +212,7 @@ export default function RiskBombsPage() {
                 <div className="relative w-full sm:w-56">
                   <input 
                     type="text"
-                    placeholder="🔍 Hledat v 1.9+..."
+                    placeholder={tr("Hledat v 1.9+...")}
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     className="w-full bg-[#0a1715] border border-gray-800 rounded-xl px-3.5 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-amber-500 transition-all shadow-inner"
@@ -260,7 +258,7 @@ export default function RiskBombsPage() {
                           <span>{match.away_team}</span>
                         </div>
                         <div className="text-[11px] text-gray-300 font-mono">
-                          <span>🕒 {match.match_date}</span>
+                          <span className="inline-flex items-center gap-1"><Icon name="clock" className="w-3.5 h-3.5" />{match.match_date}</span>
                         </div>
                       </div>
 
@@ -268,12 +266,12 @@ export default function RiskBombsPage() {
                         onClick={() => setSelectedMatchModal(match)}
                         className="w-full bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 text-[11px] font-bold py-2 px-3 rounded-xl transition-all flex items-center justify-center gap-1.5 shadow-inner mt-1 cursor-pointer"
                       >
-                        <span>📊</span> <T>{`Rozbor zápasu`}</T>
+                        <Icon name="chart" className="w-3.5 h-3.5" /> <T>{`Rozbor zápasu`}</T>
                       </button>
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-3 w-full flex-1">
-                      {match.tips
+                      {(match.allTips ?? match.tips)
                         .filter((t: any) => parseFloat(t.bookmakerOdds) >= 1.90)
                         .map((tip: any, idx: number) => {
                           const uniqueKey = match.id + '-' + tip.name;
@@ -286,7 +284,7 @@ export default function RiskBombsPage() {
                             >
                               <div className="flex items-center justify-between mb-1">
                                 <span className="bg-amber-500 text-black text-[9px] font-black px-1.5 py-0.5 rounded">
-                                  <T>{`🔥 Kurz 1.9+`}</T>
+                                  <Icon name="flame" className="w-3 h-3 inline -mt-0.5" /> <T>{`Kurz 1.9+`}</T>
                                 </span>
                                 <span className="text-[10px] text-amber-300 font-bold bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
                                   {tip.probability}
@@ -308,7 +306,7 @@ export default function RiskBombsPage() {
                                   disabled={isSaving}
                                   className="bg-gray-800 hover:bg-amber-500 hover:text-black active:scale-95 text-white text-[10px] font-bold px-2.5 py-1 rounded-lg transition-all disabled:opacity-50 flex items-center gap-1 shadow-sm cursor-pointer"
                                 >
-                                  <span>{isSaving ? '⏳' : '📥'}</span> {isSaving ? '...' : tr('Uložit')}
+                                  <Icon name={isSaving ? 'spinner' : 'bookmark'} className="w-3.5 h-3.5" /> {isSaving ? '...' : tr('Uložit')}
                                 </button>
                               </div>
                             </div>
@@ -344,7 +342,7 @@ export default function RiskBombsPage() {
             <div className="bg-[#0a1715] border-b border-gray-800 p-6 flex items-center justify-between">
               <div className="flex items-center gap-3.5">
                 <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-amber-500/20 to-yellow-500/10 border border-amber-500/40 flex items-center justify-center text-xl shadow-inner">
-                  📊
+                  <Icon name="chart" className="w-6 h-6 text-amber-400" />
                 </div>
                 <div>
                   <div className="flex items-center gap-2">
@@ -352,7 +350,7 @@ export default function RiskBombsPage() {
                       {selectedMatchModal.league}
                     </span>
                     <span className="text-[10px] text-gray-300 font-mono">
-                      🕒 {selectedMatchModal.match_date}
+                      <Icon name="clock" className="w-3.5 h-3.5 inline -mt-0.5" /> {selectedMatchModal.match_date}
                     </span>
                   </div>
                   <h3 className="text-xl font-black text-white mt-0.5">
@@ -379,7 +377,7 @@ export default function RiskBombsPage() {
                   <T>{`Dostupné zápasy s kurzem 1.90+`}</T>
                 </h4>
                 <div className="space-y-2">
-                  {selectedMatchModal.tips
+                  {(selectedMatchModal.allTips ?? selectedMatchModal.tips)
                     ?.filter((t: any) => parseFloat(t.bookmakerOdds) >= 1.90)
                     .map((t: any, i: number) => (
                       <div key={i} className="bg-[#0a1715] border border-gray-800 p-4 rounded-xl flex items-center justify-between">

@@ -1,4 +1,6 @@
 import { NextResponse } from 'next/server';
+import { adminClient } from '@/lib/server-auth';
+import { isVipRequest, freeMatchIds } from '@/lib/access';
 import { buildLeagueModel, predictMatch, scoreMatrix, toFinishedMatches, activeModelOptions } from '@/lib/poisson';
 
 async function fd(path: string, revalidate: number) {
@@ -48,6 +50,17 @@ function teamForm(finished: any[], teamId: number) {
 export async function GET(req: Request) {
   const id = new URL(req.url).searchParams.get('id') || '';
   if (!/^\d+$/.test(id)) return NextResponse.json({ success: false, error: 'Neplatné ID zápasu.' }, { status: 400 });
+  // Rozbor je placený obsah: bez VIP jen u zápasů zdarma
+  if (!(await isVipRequest(req))) {
+    let allowed = false;
+    try {
+      const { data } = await adminClient().from('tips_cache').select('payload').eq('key', 'tips:v3').maybeSingle();
+      const now = Date.now();
+      const upcoming = ((data?.payload as any)?.data || []).filter((m: any) => !m.utcDate || new Date(m.utcDate).getTime() > now);
+      allowed = freeMatchIds(upcoming).has(id);
+    } catch {}
+    if (!allowed) return NextResponse.json({ success: false, error: 'Rozbor tohoto zápasu je dostupný pro členy VIP.' }, { status: 403 });
+  }
   if (!process.env.FOOTBALL_DATA_API_KEY) return NextResponse.json({ success: false, error: 'Chybí FOOTBALL_DATA_API_KEY.' }, { status: 500 });
 
   const match = await fd(`/matches/${id}`, 3600);

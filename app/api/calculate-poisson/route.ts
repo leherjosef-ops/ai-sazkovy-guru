@@ -8,7 +8,9 @@ import {
   activeModelOptions,
 } from '@/lib/poisson';
 import { adminClient } from '@/lib/server-auth';
-import { getLeagueEvents, getBttsYes, findEvent, oddsConfig, getQuota, type MarketPrice } from '@/lib/odds';
+import { isVipRequest, lockForFree } from '@/lib/access';
+import { candidates, selectTips, type MarketKey } from '@/lib/markets';
+import { getLeagueEvents, getBtts, findEvent, oddsConfig, getQuota, type MarketPrice } from '@/lib/odds';
 
 const TARGET_COMPETITIONS = ['PL', 'PD', 'SA', 'BL1', 'FL1', 'CL', 'DED', 'PPL', 'BSA', 'ELC'];
 const SURE_BET_THRESHOLD = 0.65;
@@ -32,6 +34,9 @@ async function fetchCompetition(code: string, apiKey: string): Promise<any[]> {
 }
 
 const GAP_WARNING = 0.1; // model a trh se liší o víc než 10 p. b. → nedůvěřovat
+// Váha trhu při spojení s modelem (0 = jen model, 1 = jen trh)
+const MW = Number(process.env.MARKET_WEIGHT);
+const MARKET_WEIGHT = Number.isFinite(MW) && process.env.MARKET_WEIGHT !== '' && process.env.MARKET_WEIGHT !== undefined ? Math.min(1, Math.max(0, MW)) : 0.5;
 
 const fmtEdge = (e: number) => `${e > 0 ? '+' : ''}${(e * 100).toFixed(1)}%`;
 
@@ -49,8 +54,8 @@ function makeTip(name: string, modelProb: number, market?: MarketPrice | null) {
       valueSuspicious: false,
     };
   }
-  // Model je jednoduchý, trh zná víc → pro value i „jistotu" použijeme průměr obou
-  const blended = (modelProb + market.prob) / 2;
+  // Model je jednoduchý, trh zná víc → pro value i „jistotu" použijeme vážený průměr obou (MARKET_WEIGHT, výchozí 0.5)
+  const blended = MARKET_WEIGHT * market.prob + (1 - MARKET_WEIGHT) * modelProb;
   const gapWarning = Math.abs(modelProb - market.prob) > GAP_WARNING;
   const edge = blended * market.best - 1;
   // Neobvykle vysoké value nebo kurz jedné sázkovky výrazně nad ostatními bývá zastaralý kurz nebo chyba, ne příležitost
@@ -71,16 +76,18 @@ function makeTip(name: string, modelProb: number, market?: MarketPrice | null) {
   };
 }
 
-function buildTips(
-  home: string,
-  p: ReturnType<typeof predictMatch>,
-  m: { home?: MarketPrice; over25?: MarketPrice; btts?: MarketPrice | null }
-) {
-  return [
-    makeTip(`Výhra ${home}`, p.homeWin, m.home),
-    makeTip('Celkem gólů: Více než 2.5 gólů', p.over25, m.over25),
-    makeTip('Oba týmy dají gól (ANO)', p.btts, m.btts),
-  ];
+type Markets = Partial<Record<MarketKey, MarketPrice | null>>;
+
+// Spočítá všechny typy sázek, ke každému přidá kurzy sázkovek (pokud jsou) a vybere 3 nejpravděpodobnější.
+// allTips = všechny typy (pro Bomby a Generátor), tips = vybrané pro kartu zápasu.
+function buildTips(home: string, away: string, p: ReturnType<typeof predictMatch>, m: Markets) {
+  const all = candidates(p, home, away).map((c) => {
+    const tip = makeTip(c.name, c.prob, m[c.key]);
+    const chance = tip.oddsSource === 'bookmaker' ? MARKET_WEIGHT * m[c.key]!.prob + (1 - MARKET_WEIGHT) * c.prob : c.prob;
+    return { ...tip, market: c.key, group: c.group, chance: Math.round(chance * 1000) / 1000, odds: Number(tip.bookmakerOdds) };
+  });
+  const strip = ({ odds, ...t }: (typeof all)[number]) => t;
+  return { tips: selectTips(all).map(strip), allTips: all.map(strip) };
 }
 
 async function compute() {
@@ -137,10 +144,12 @@ async function compute() {
         const prediction = predictMatch(model, match.homeTeam.id, match.awayTeam.id);
         const ev = findEvent(oddsEvents, home, away, match.utcDate);
 
-        const markets: { home?: MarketPrice; over25?: MarketPrice; btts?: MarketPrice | null } = {
+        const markets: Markets = {
           home: ev?.home1x2,
-          over25: ev?.over25,
-          btts: null,
+          draw: ev?.draw1x2,
+          away: ev?.away1x2,
+          o25: ev?.over25,
+          u25: ev?.under25,
         };
 
         const row: any = {
@@ -164,16 +173,17 @@ async function compute() {
             away: Math.round(prediction.lambdaAway * 100) / 100,
           },
           modelSample: model.sampleSize,
-          tips: buildTips(home, prediction, markets),
+          ...buildTips(home, away, prediction, markets),
         };
         processed.push(row);
 
         // „Oba týmy dají gól" se stahuje po zápasech (1 kredit/zápas) → jen nejbližší dny
         if (ev && cfg.bttsDays > 0 && t <= bttsLimit) {
           bttsJobs.push(
-            getBttsYes(ev.sportKey, ev.id).then((btts) => {
-              markets.btts = btts;
-              row.tips = buildTips(home, prediction, markets);
+            getBtts(ev.sportKey, ev.id).then((btts) => {
+              markets.bttsY = btts?.yes;
+              markets.bttsN = btts?.no;
+              Object.assign(row, buildTips(home, away, prediction, markets));
             })
           );
         }
@@ -199,9 +209,12 @@ async function compute() {
 // Spočítané tipy (včetně stažených kurzů) se na TIPS_CACHE_MINUTES ukládají do tabulky tips_cache.
 // Díky tomu každé otevření stránky nevolá football-data.org ani The Odds API. Když tabulka neexistuje
 // nebo je databáze nedostupná, route funguje dál bez cache.
-const CACHE_KEY = 'tips:v2';
+const CACHE_KEY = 'tips:v3';
 
-export async function GET() {
+export async function GET(req: Request) {
+  const vip = await isVipRequest(req);
+  // Bez VIP se v odpovědi pošlou tipy jen k nejbližším zápasům zdarma (ochrana placeného obsahu na serveru).
+  const forViewer = (payload: any) => (vip ? payload : { ...payload, data: lockForFree(payload.data || []), vip: false });
   const minutes = Math.max(0, Number(process.env.TIPS_CACHE_MINUTES ?? 60));
   const canCache = minutes > 0 && Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY);
 
@@ -213,19 +226,18 @@ export async function GET() {
         const now = Date.now();
         const payload: any = data.payload;
         payload.data = (payload.data || []).filter((m: any) => !m.utcDate || new Date(m.utcDate).getTime() > now);
-        return NextResponse.json({ ...payload, cached: true, cachedAt: data.updated_at });
+        return NextResponse.json({ ...forViewer(payload), cached: true, cachedAt: data.updated_at });
       }
     } catch {}
   }
 
   const res = await compute();
-  if (canCache && res.ok) {
+  let payload: any;
+  try { payload = await res.json(); } catch { return NextResponse.json({ success: false, data: [] }, { status: 500 }); }
+  if (canCache && res.ok && payload?.success && Array.isArray(payload.data) && payload.data.length > 0) {
     try {
-      const payload = await res.clone().json();
-      if (payload?.success && Array.isArray(payload.data) && payload.data.length > 0) {
-        await adminClient().from('tips_cache').upsert({ key: CACHE_KEY, payload, updated_at: new Date().toISOString() });
-      }
+      await adminClient().from('tips_cache').upsert({ key: CACHE_KEY, payload, updated_at: new Date().toISOString() });
     } catch {}
   }
-  return res;
+  return NextResponse.json(forViewer(payload), { status: res.status });
 }

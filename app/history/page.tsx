@@ -4,14 +4,11 @@ import { ticketProfit } from '@/lib/settle';
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import AppHeader from '@/components/AppHeader';
-import { createClient } from '@supabase/supabase-js';
+import { supabase } from '@/lib/supabase';
 import { toast } from '@/components/Toaster';
 import { T, tr, trTip, loc } from '@/lib/i18n';
+import Icon from '@/components/Icon';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
 
 export default function HistoryPage() {
   const [user, setUser] = useState<any>(null);
@@ -117,7 +114,7 @@ export default function HistoryPage() {
           <div className="flex items-center justify-between flex-wrap gap-4">
             <div className="flex items-center gap-4">
               <div className="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-2xl shadow-inner">
-                📊
+                <Icon name="history" className="w-7 h-7 text-amber-400" />
               </div>
               <div>
                 <h1 className="text-2xl font-black text-white"><T>{`Historie a uložené tikety`}</T></h1>
@@ -132,7 +129,7 @@ export default function HistoryPage() {
                   disabled={isSettling}
                   className="bg-gradient-to-r from-amber-500 to-yellow-600 hover:from-amber-400 hover:to-yellow-500 text-black text-xs font-black px-4 py-2.5 rounded-xl transition-all shadow-md shadow-amber-950/40 disabled:opacity-50 flex items-center gap-2 cursor-pointer"
                 >
-                  {isSettling ? 'Vyhodnocuji...' : '⚡ Vyhodnotit tikety'}
+                  {isSettling ? tr('Vyhodnocuji...') : tr('Vyhodnotit tikety')}
                 </button>
               )}
 
@@ -170,7 +167,7 @@ export default function HistoryPage() {
               {tickets.map((ticket) => {
                 const status = ticket.status || 'PENDING';
                 
-                let statusBadge = <span className="bg-amber-500/10 text-amber-400 border border-amber-500/30 text-[10px] font-bold px-2 py-0.5 rounded"><T>{`⏳ Čeká se`}</T></span>;
+                let statusBadge = <span className="bg-amber-500/10 text-amber-400 border border-amber-500/30 text-[10px] font-bold px-2 py-0.5 rounded"><Icon name="clock" className="w-3 h-3 inline -mt-0.5" /> <T>{`Čeká se`}</T></span>;
                 if (status === 'WON') {
                   statusBadge = <span className="bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-black px-2 py-0.5 rounded"><T>{`✔ Výhra`}</T></span>;
                 } else if (status === 'VOID') {

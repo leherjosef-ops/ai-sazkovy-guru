@@ -17,10 +17,23 @@ export interface ModelOptions {
   venueSplit?: boolean; // síla zvlášť doma/venku
   rho?: number; // Dixon–Coles; 0 = vypnuto
   asOf?: number; // k jakému okamžiku se váhy počítají (výchozí: teď)
+  method?: 'average' | 'mle'; // average = průměry gólů, mle = odhad metodou maximální věrohodnosti
+  penalty?: number; // jen mle: jak silně táhnout týmy k průměru (vyšší = opatrnější)
+  warmStart?: MleParams; // jen mle: start z předchozího odhadu (zrychlí backtest)
+}
+
+export interface MleParams {
+  c: number; // průměrná úroveň gólů (log)
+  home: number; // domácí výhoda (log)
+  att: Map<number, number>; // útok týmu (log, 0 = průměr)
+  def: Map<number, number>; // obrana týmu (log, 0 = průměr, kladná = dostává víc)
 }
 
 export const FULL_MODEL: ModelOptions = { halfLifeDays: 120, venueSplit: true, rho: -0.08 };
 export const BASIC_MODEL: ModelOptions = { halfLifeDays: null, venueSplit: false, rho: 0 };
+// Síly týmů odhadnuté najednou ze všech zápasů, takže se zohlední i síla soupeřů (model Maher / Dixon–Coles).
+export const MLE_PENALTY = Math.max(0.5, Number(process.env.MODEL_PENALTY) || 12);
+export const MLE_MODEL: ModelOptions = { method: 'mle', halfLifeDays: null, venueSplit: false, rho: 0, penalty: MLE_PENALTY };
 
 interface TeamStats {
   w: number; gf: number; ga: number; // všechny zápasy (vážené)
@@ -35,6 +48,7 @@ export interface LeagueModel {
   sampleSize: number;
   venueSplit: boolean;
   rho: number;
+  mle?: MleParams;
 }
 
 export interface Prediction {
@@ -44,7 +58,9 @@ export interface Prediction {
   draw: number;
   awayWin: number;
   btts: number;
+  over15: number;
   over25: number;
+  over35: number;
 }
 
 const DEFAULT_AVG_HOME = 1.5;
@@ -88,7 +104,79 @@ export function buildLeagueModel(matches: FinishedMatch[], opts: ModelOptions = 
     sampleSize: matches.length,
     venueSplit: Boolean(o.venueSplit),
     rho: o.rho ?? 0,
+    mle: o.method === 'mle' && enough ? fitMle(matches, o, asOf) : undefined,
   };
+}
+
+// Odhad metodou maximální věrohodnosti (Poissonova regrese):
+//   góly domácích ~ Poisson(exp(c + home + útok_domácích + obrana_hostů))
+//   góly hostů    ~ Poisson(exp(c + útok_hostů + obrana_domácích))
+// Hledá se taková síla všech týmů najednou, která nejlépe vysvětlí všechny výsledky. Penalizace táhne
+// týmy s málo zápasy k průměru. Řeší se po souřadnicích Newtonovou metodou (každý krok je jednorozměrný).
+function fitMle(matches: FinishedMatch[], o: ModelOptions, asOf: number): MleParams {
+  const pen = o.penalty ?? 4;
+  const rows = matches.map((m) => {
+    const age = m.time ? Math.max(0, (asOf - m.time) / DAY) : 0;
+    const w = o.halfLifeDays && m.time ? Math.pow(0.5, age / o.halfLifeDays) : 1;
+    return { ...m, w };
+  });
+  const ids = new Set<number>();
+  for (const m of rows) { ids.add(m.homeId); ids.add(m.awayId); }
+
+  const ws = o.warmStart;
+  const att = new Map<number, number>();
+  const def = new Map<number, number>();
+  for (const id of ids) { att.set(id, ws?.att.get(id) ?? 0); def.set(id, ws?.def.get(id) ?? 0); }
+  let sw = 0, sg = 0, shg = 0, sag = 0;
+  for (const m of rows) { sw += m.w; sg += m.w * (m.homeGoals + m.awayGoals); shg += m.w * m.homeGoals; sag += m.w * m.awayGoals; }
+  let c = ws?.c ?? Math.log(Math.max(0.1, sg / (2 * sw)));
+  let home = ws?.home ?? Math.log(Math.max(0.1, shg) / Math.max(0.1, sag)) / 2;
+
+  // Seznam zápasů každého týmu, aby se jeden krok počítal jen z jeho zápasů
+  const byTeam = new Map<number, number[]>();
+  rows.forEach((m, i) => {
+    (byTeam.get(m.homeId) ?? byTeam.set(m.homeId, []).get(m.homeId)!).push(i);
+    (byTeam.get(m.awayId) ?? byTeam.set(m.awayId, []).get(m.awayId)!).push(i);
+  });
+  const muH = (m: typeof rows[number]) => Math.exp(c + home + att.get(m.homeId)! + def.get(m.awayId)!);
+  const muA = (m: typeof rows[number]) => Math.exp(c + att.get(m.awayId)! + def.get(m.homeId)!);
+  const step = (g: number, h: number) => clamp(g / h, -1, 1); // tlumený Newtonův krok
+
+  const sweeps = ws ? 8 : 40;
+  for (let it = 0; it < sweeps; it++) {
+    let maxStep = 0;
+    // společné parametry
+    let g = 0, h = 0, gh = 0, hh = 0;
+    for (const m of rows) {
+      const a = muH(m), b = muA(m);
+      g += m.w * (m.homeGoals - a + m.awayGoals - b); h += m.w * (a + b);
+      gh += m.w * (m.homeGoals - a); hh += m.w * a;
+    }
+    let d = step(g, h); c += d; maxStep = Math.max(maxStep, Math.abs(d));
+    d = step(gh, hh); home += d; maxStep = Math.max(maxStep, Math.abs(d));
+
+    // týmy: útok a obrana
+    for (const id of ids) {
+      let ga = -pen * att.get(id)!, ha = pen, gd = -pen * def.get(id)!, hd = pen;
+      for (const i of byTeam.get(id)!) {
+        const m = rows[i];
+        if (m.homeId === id) {
+          const a = muH(m), b = muA(m);
+          ga += m.w * (m.homeGoals - a); ha += m.w * a; // vstřelené doma
+          gd += m.w * (m.awayGoals - b); hd += m.w * b; // obdržené doma
+        } else {
+          const a = muH(m), b = muA(m);
+          ga += m.w * (m.awayGoals - b); ha += m.w * b; // vstřelené venku
+          gd += m.w * (m.homeGoals - a); hd += m.w * a; // obdržené venku
+        }
+      }
+      const da = step(ga, ha), dd = step(gd, hd);
+      att.set(id, att.get(id)! + da); def.set(id, def.get(id)! + dd);
+      maxStep = Math.max(maxStep, Math.abs(da), Math.abs(dd));
+    }
+    if (maxStep < 1e-4) break;
+  }
+  return { c, home, att, def };
 }
 
 // Relativní síly týmu (1 = průměr soutěže)
@@ -130,26 +218,35 @@ function tau(i: number, j: number, lh: number, la: number, rho: number): number 
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
 
 export function predictMatch(model: LeagueModel, homeId: number, awayId: number): Prediction {
-  const h = strengths(model, homeId);
-  const a = strengths(model, awayId);
+  let lambdaHome: number, lambdaAway: number;
+  if (model.mle) {
+    // Tým, který v datech není (nováček), má průměrnou sílu
+    const { c, home, att, def } = model.mle;
+    lambdaHome = clamp(Math.exp(c + home + (att.get(homeId) ?? 0) + (def.get(awayId) ?? 0)), 0.2, 4.5);
+    lambdaAway = clamp(Math.exp(c + (att.get(awayId) ?? 0) + (def.get(homeId) ?? 0)), 0.2, 4.5);
+  } else {
+    const h = strengths(model, homeId);
+    const a = strengths(model, awayId);
+    lambdaHome = clamp(model.avgHome * h.atkHome * a.defAway, 0.2, 4.5);
+    lambdaAway = clamp(model.avgAway * a.atkAway * h.defHome, 0.2, 4.5);
+  }
 
-  const lambdaHome = clamp(model.avgHome * h.atkHome * a.defAway, 0.2, 4.5);
-  const lambdaAway = clamp(model.avgAway * a.atkAway * h.defHome, 0.2, 4.5);
-
-  let homeWin = 0, draw = 0, awayWin = 0, over25 = 0, btts = 0, total = 0;
+  let homeWin = 0, draw = 0, awayWin = 0, over15 = 0, over25 = 0, over35 = 0, btts = 0, total = 0;
   for (let i = 0; i <= MAX_GOALS; i++) {
     for (let j = 0; j <= MAX_GOALS; j++) {
       const p = poissonPmf(i, lambdaHome) * poissonPmf(j, lambdaAway) * tau(i, j, lambdaHome, lambdaAway, model.rho);
       total += p;
       if (i > j) homeWin += p; else if (i === j) draw += p; else awayWin += p;
+      if (i + j >= 2) over15 += p;
       if (i + j >= 3) over25 += p;
+      if (i + j >= 4) over35 += p;
       if (i >= 1 && j >= 1) btts += p;
     }
   }
   return {
     lambdaHome, lambdaAway,
     homeWin: homeWin / total, draw: draw / total, awayWin: awayWin / total,
-    over25: over25 / total, btts: btts / total,
+    over15: over15 / total, over25: over25 / total, over35: over35 / total, btts: btts / total,
   };
 }
 
@@ -191,10 +288,13 @@ export function toFinishedMatches(matches: any[]): FinishedMatch[] {
 // Který model používají tipy a rozbory. Zpětné ověření na skutečných zápasech (stránka /model) vyšlo
 // u základního modelu o chlup líp než u vylepšeného, proto je výchozí základní.
 // Vylepšený zapneš v .env.local: MODEL_PROFILE=full
-export type ModelProfile = 'basic' | 'full';
+// Nový model s odhadem metodou max. věrohodnosti zapneš: MODEL_PROFILE=mle
+export type ModelProfile = 'basic' | 'full' | 'mle';
 export function activeModelProfile(): ModelProfile {
-  return process.env.MODEL_PROFILE === 'full' ? 'full' : 'basic';
+  const p = process.env.MODEL_PROFILE;
+  return p === 'full' || p === 'mle' ? p : 'basic';
 }
 export function activeModelOptions(): ModelOptions {
-  return activeModelProfile() === 'full' ? FULL_MODEL : BASIC_MODEL;
+  const p = activeModelProfile();
+  return p === 'full' ? FULL_MODEL : p === 'mle' ? MLE_MODEL : BASIC_MODEL;
 }

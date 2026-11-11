@@ -1,11 +1,12 @@
 'use client';
 
 import { useState } from 'react';
-import { createClient } from '@supabase/supabase-js';
+import { supabase } from '@/lib/supabase';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { toast } from '@/components/Toaster';
 import { T, tr } from '@/lib/i18n';
+import Icon from '@/components/Icon';
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
@@ -15,10 +16,6 @@ export default function LoginPage() {
   const [agreed, setAgreed] = useState(false);
   const router = useRouter();
 
-  const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  );
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -79,7 +76,7 @@ export default function LoginPage() {
       <div className="max-w-md w-full bg-[#14292a] border border-gray-800/80 p-8 rounded-3xl shadow-xl space-y-6">
         <div className="text-center space-y-2">
           <div className="inline-flex w-12 h-12 rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 items-center justify-center text-2xl shadow-md shadow-emerald-950/50 mb-1">
-            ⚡
+            <Icon name="bolt" className="w-6 h-6 text-white" />
           </div>
           <h1 className="text-2xl font-black text-white tracking-tight"><T>{`ApexOdds`}</T></h1>
           <p className="text-xs text-gray-400 font-medium">{mode === 'login' ? tr('Přihlaste se ke svému účtu') : tr('Vytvořte si účet')}</p>
@@ -92,7 +89,7 @@ export default function LoginPage() {
             onClick={() => handleSocialLogin('google')}
             className="flex items-center justify-center gap-2 bg-[#0a1715] hover:bg-gray-800 border border-gray-800/80 text-gray-200 text-xs font-semibold py-2.5 rounded-xl transition-all shadow-inner"
           >
-            <span>🌐</span> <T>{`Google`}</T>
+            <Icon name="login" className="w-4 h-4" /> <T>{`Pokračovat přes Google`}</T>
           </button>
         </div>
 

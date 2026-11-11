@@ -3,14 +3,11 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import AppHeader from '@/components/AppHeader';
-import { createClient } from '@supabase/supabase-js';
+import { supabase } from '@/lib/supabase';
 import { toast } from '@/components/Toaster';
 import { T, tr } from '@/lib/i18n';
+import Icon from '@/components/Icon';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
 
 export default function HomePage() {
   const [user, setUser] = useState<any>(null);
@@ -95,7 +92,7 @@ export default function HomePage() {
           </div>
 
           <span className="bg-amber-500/15 text-amber-300 border border-amber-500/30 text-xs font-bold px-4 py-1.5 rounded-full shadow-sm">
-            <T>{`✨ Další generace matematického sázení`}</T>
+            <Icon name="sparkles" className="w-3.5 h-3.5 inline -mt-0.5" /> <T>{`Další generace matematického sázení`}</T>
           </span>
 
           <h1 className="text-4xl md:text-6xl font-black text-white tracking-tight leading-tight">
@@ -170,7 +167,7 @@ export default function HomePage() {
                   onClick={handleActivateVip}
                   className="w-full bg-gradient-to-r from-amber-500 to-yellow-600 hover:from-amber-400 hover:to-yellow-500 text-black font-black text-xs py-3.5 rounded-xl transition-all shadow-xl shadow-amber-950/60 cursor-pointer"
                 >
-                  <T>{`⚡ Aktivovat VIP členství`}</T>
+                  <Icon name="bolt" className="w-4 h-4 inline -mt-0.5" /> <T>{`Aktivovat VIP členství`}</T>
                 </button>
               )}
             </div>
